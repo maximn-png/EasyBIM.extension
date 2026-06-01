@@ -1,0 +1,12 @@
+# Default: Maxim reviews everything not explicitly assigned below
+* @maximn-png
+
+# Core files — always require Maxim's approval
+/lib/                @maximn-png
+/startup.py          @maximn-png
+/extension.json      @maximn-png
+/EasyBIM.tab/        @maximn-png
+
+# To assign a developer to their button, add a line like:
+# /EasyBIM.tab/Modeling.panel/WallLength.pushbutton/    @github-username
+# That developer can then merge changes to that button without additional review.
