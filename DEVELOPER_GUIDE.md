@@ -93,6 +93,26 @@ Maxim will look at your code, may leave comments or ask for small changes, and w
 
 ---
 
+## Getting the Latest Changes (for non-developers)
+
+When someone on the team builds a new button and Maxim merges it, the update exists on GitHub — but it does **not** download to your machine automatically. You need to sync manually.
+
+**The easiest way: double-click `sync.bat`**
+
+There is a file called `sync.bat` in the plugin folder. Double-click it. It downloads the latest changes and tells you when it is done. Then go to Revit and click **pyRevit tab → Reload** — the new buttons will appear.
+
+The plugin folder is here:
+```
+%APPDATA%\pyRevit\Extensions\EasyBIM.extension
+```
+
+**If you prefer GitHub Desktop:**
+1. Download and install [GitHub Desktop](https://desktop.github.com)
+2. Open the repo (`File → Add local repository → browse to the EasyBIM.extension folder`)
+3. Click **Fetch origin** then **Pull** whenever you want to sync
+
+---
+
 ## Why These Rules Exist
 
 **Why can't I just push directly to the main version?**
@@ -116,4 +136,5 @@ GitHub keeps the full history of every change. If a button breaks something, we 
 | Start building a button | Open folder in VS Code, describe to Claude Code |
 | Test your button | pyRevit tab → Reload (no restart needed) |
 | Submit your work | `git checkout -b`, `git add .`, `git commit`, `git push`, then open PR on GitHub |
+| Get the latest buttons (no coding) | Double-click `sync.bat` in the plugin folder, then reload pyRevit |
 | Get help | Ask Maxim |
