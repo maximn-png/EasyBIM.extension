@@ -42,7 +42,7 @@ You do not need to be a professional programmer. Claude Code writes the code for
 You need two things from Maxim before you can do anything:
 
 1. **Access to the repository** — the plugin code is private. Maxim needs to add your GitHub account. Send him your GitHub username (create a free account at github.com if you don't have one).
-2. **A button to work on** — design a button or panel you will be developing using the Stitch project: https://stitch.withgoogle.com/projects/18030136963493624461. This avoids two people accidentally working on the same thing at the same time. Approve the design with Maxim.
+2. **A button to work on** — design the button or panel you will be building using Claude Design (claude.ai/design). Ask Maxim to share the current EasyBIM design file with you so you can work within the existing style, or create a new design from scratch if it is a completely new feature. This avoids two people accidentally working on the same thing at the same time. Approve the design with Maxim before writing any code.
 
 ### First-time setup
 
@@ -73,7 +73,22 @@ code "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
 
 **Step 2 — Start a Claude Code session**
 
-Inside VS Code, open Claude Code and describe what you want to build. Be specific — the more detail you give, the better the result. Paste your design from Stitch.
+Inside VS Code, open Claude Code and describe what you want to build. Be specific — the more detail you give, the better the result. Paste your design from Claude Design.
+
+**Step 2.5 — Create a development branch**
+
+Before you write any code, create a branch for your work. A branch is your own private workspace — it keeps your changes separate from everyone else until you are ready to submit.
+
+Open PowerShell and run:
+
+```powershell
+cd "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
+git checkout -b feature/name-of-your-button
+```
+
+Replace `name-of-your-button` with a short description of what you are building, using hyphens instead of spaces (for example: `feature/pipe-color-by-system` or `feature/room-area-tag`).
+
+You are now on your own branch. Any changes Claude Code makes will stay here until you submit them for review.
 
 **Step 3 — Test it in Revit**
 
