@@ -57,6 +57,21 @@ code "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
 
 Inside VS Code, open Claude Code and describe what you want to build. Be specific — the more detail you give, the better the result. Copy paste you design from stitch
 
+**Step 2.5 — Create a development branch**
+
+Before you write any code, create a branch for your work. A branch is your own private workspace — it keeps your changes separate from everyone else until you are ready to submit.
+
+Open PowerShell and run:
+
+```powershell
+cd "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
+git checkout -b feature/name-of-your-button
+```
+
+Replace `name-of-your-button` with a short description of what you are building, using hyphens instead of spaces (for example: `feature/pipe-color-by-system` or `feature/room-area-tag`).
+
+You are now on your own branch. Any changes Claude Code makes will stay here until you submit them for review.
+
 **Step 3 — Test it in Revit immediately**
 
 Go to Revit and click **pyRevit tab → Reload**. Your new button appears in the ribbon right away. Click it and see if it does what you wanted. If something is wrong or you want to change it, go back to Claude Code, describe the issue, and reload again. Repeat until it works correctly.
