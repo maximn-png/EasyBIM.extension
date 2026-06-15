@@ -2,11 +2,9 @@
 Brief description of the new command or change.
 
 ## Panel
-- [ ] Modeling
-- [ ] Documentation
-- [ ] Data
-- [ ] QC
-- [ ] Utilities
+- [ ] BIM Management
+- [ ] MEP Coordination
+- [ ] Manage
 
 ## Checklist
 - [ ] Script has `#! python3` on line 1
