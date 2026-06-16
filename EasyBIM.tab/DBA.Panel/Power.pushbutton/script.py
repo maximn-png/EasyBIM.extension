@@ -703,18 +703,10 @@ def _add_field(sd, field_name):
 
 
 def _finalize_sched(sd, price_param_names):
-    """Grand total row + Totals display type on price columns."""
-    sd.ShowGrandTotal = True
-    sd.ShowGrandTotalCount = True
-    try: sd.GrandTotalTitle = u'\u05e1\u05d4"\u05db'
-    except: pass
-    from Autodesk.Revit.DB import ScheduleFieldDisplayType
-    for i in range(sd.GetFieldCount()):
-        try:
-            f = sd.GetField(i)
-            if f.GetName() in price_param_names:
-                f.DisplayType = ScheduleFieldDisplayType.Totals
-        except: pass
+    # Price params are TEXT type \u2014 Revit cannot sum TEXT fields and raises
+    # "Display of a grand total row is not enabled" when accessing grand total
+    # properties. Do not enable ShowGrandTotal or touch any grand total APIs.
+    pass
 
 
 def create_generator_schedule():

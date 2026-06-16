@@ -1127,9 +1127,12 @@ def _add_field(sd, doc, name):
     return None
 
 def _set_totals_and_sort(sd, total_field_name, sort_field_name=None):
-    # Price params are TEXT type — grand total sum is shown in the summary dialog instead
-    sd.ShowGrandTotal      = False
-    sd.ShowGrandTotalCount = False
+    # Price params are TEXT type — Revit cannot sum TEXT fields.
+    # Grand total is shown in the summary dialog instead.
+    # ShowGrandTotal defaults to False for new schedules; do not touch it or
+    # ShowGrandTotalCount, because accessing count properties while grand total
+    # is disabled raises "Display of a grand total row is not enabled."
+    pass
     if sort_field_name:
         try:
             from Autodesk.Revit.DB import ScheduleSortGroupField, ScheduleSortOrder
