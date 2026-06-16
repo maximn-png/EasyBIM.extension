@@ -831,14 +831,14 @@ BQ_NOTES = [
 ]
 
 _MM         = 1.0 / 304.8
-_BQ_CAT_W   = 45  * _MM   # עמודת קטגוריה
-_BQ_NOTE_W  = 155 * _MM   # עמודת הערה
-_BQ_HDR_H   = 10  * _MM   # גובה שורת כותרות עמודות
-_BQ_ROW_H   = 28  * _MM   # גובה שורת נתון בסיסי
-_BQ_LINE_H  = 7   * _MM   # גובה שורת טקסט נוספת (לכל \n)
-_BQ_TTL_H   = 12  * _MM   # גובה כותרת ראשית מרחפת
-_BQ_PAD_X   =  2  * _MM   # ריפוד אופקי
-_BQ_PAD_Y   =  2  * _MM   # ריפוד אנכי
+_BQ_CAT_W   = 70  * _MM   # עמודת קטגוריה (הורחבה מ-45)
+_BQ_NOTE_W  = 210 * _MM   # עמודת הערה (הורחבה מ-155)
+_BQ_HDR_H   = 14  * _MM   # גובה שורת כותרות עמודות (הוגדל מ-10)
+_BQ_ROW_H   = 42  * _MM   # גובה שורת נתון בסיסי (הוגדל מ-28)
+_BQ_LINE_H  = 12  * _MM   # גובה שורת טקסט נוספת לכל \n (הוגדל מ-7)
+_BQ_TTL_H   = 16  * _MM   # גובה כותרת ראשית מרחפת (הוגדל מ-12)
+_BQ_PAD_X   =  6  * _MM   # ריפוד אופקי — מרחק בטחון מהקווים (הוגדל מ-2)
+_BQ_PAD_Y   =  4  * _MM   # ריפוד אנכי (הוגדל מ-2)
 
 
 def _bq_tnt_name(elem):
@@ -886,16 +886,19 @@ def _bq_ln(view, x1, y1, x2, y2):
 
 def _bq_txt(view, tid, x, y, w, text):
     """
-    RTL TextNote placement.
-    In Revit, the origin of a TextNote is its top-LEFT corner.
-    For right-aligned RTL Hebrew: place origin at x (left edge of cell),
-    set width = w, and HorizontalAlignment.Right aligns text to the right within the box.
+    RTL TextNote placement with strict width constraint.
+    origin = top-LEFT corner of the bounding box.
+    Width is clamped to at least 10mm to avoid Revit rejecting tiny values.
+    HorizontalTextAlignment.Right right-aligns Hebrew inside the box so text
+    never crosses the right edge (and padding keeps it off the left edge).
     """
     from Autodesk.Revit.DB import TextNote, TextNoteOptions, HorizontalTextAlignment
-    if not text: return
+    if not text:
+        return
+    safe_w = max(w, 10 * _MM)   # Revit rejects widths below ~5mm
     opts = TextNoteOptions(tid)
     opts.HorizontalAlignment = HorizontalTextAlignment.Right
-    TextNote.Create(doc, view.Id, XYZ(x, y, 0), w, text, opts)
+    TextNote.Create(doc, view.Id, XYZ(x, y, 0), safe_w, text, opts)
 
 
 def create_bq_drafting_view():
@@ -950,10 +953,16 @@ def create_bq_drafting_view():
     cy = ch
 
     # ── שורות נתונים ─────────────────────────────────────────────────────────
+    note_col_inner_w_mm = (_BQ_NOTE_W - _BQ_PAD_X * 2) * 304.8   # mm
     for cat, note in BQ_NOTES:
-        # גובה שורה: בסיס + שורות נוספות לפי \n
-        extra = note.count(u"\n")
-        rh  = _BQ_ROW_H + extra * _BQ_LINE_H
+        # גובה שורה: שורות \n מפורשות + הערכת שורות עטיפה אוטומטית
+        explicit_breaks = note.count(u"\n")
+        # הנח שכל 55 תווים עוטפים שורה בעמודת הערה
+        chars_per_line  = max(1, int(note_col_inner_w_mm / 3.0))
+        max_line_len    = max(len(s) for s in note.split(u"\n")) if note else 0
+        wrap_extra      = max(0, max_line_len // chars_per_line)
+        total_extra     = explicit_breaks + wrap_extra
+        rh  = _BQ_ROW_H + total_extra * _BQ_LINE_H
         bot = cy - rh
 
         # מסגרת השורה
