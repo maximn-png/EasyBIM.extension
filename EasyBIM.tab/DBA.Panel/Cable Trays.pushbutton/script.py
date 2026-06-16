@@ -80,12 +80,14 @@ PARAM_TOTAL = u"Total Price Cable Trays"
 PARAM_DEFS = [
     (PARAM_CODE,        u"TEXT"),
     (PARAM_DESC,        u"TEXT"),
-    (PARAM_PRICE,       u"NUMBER"),
+    (PARAM_PRICE,       u"TEXT"),
     (PARAM_ADDON_CODE,  u"TEXT"),
     (PARAM_ADDON_DESC,  u"TEXT"),
-    (PARAM_ADDON_PRICE, u"NUMBER"),
-    (PARAM_TOTAL,       u"NUMBER"),
+    (PARAM_ADDON_PRICE, u"TEXT"),
+    (PARAM_TOTAL,       u"TEXT"),
 ]
+
+PRICE_PARAM_NAMES = {PARAM_PRICE, PARAM_ADDON_PRICE, PARAM_TOTAL}
 
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
@@ -154,6 +156,43 @@ def create_missing_shared_params(missing):
             os.remove(spf_path)
         except Exception:
             pass
+
+def remove_old_number_bindings():
+    """Remove NUMBER-type bindings for price params so they are recreated as TEXT."""
+    to_remove = []
+    it = doc.ParameterBindings.ForwardIterator()
+    while it.MoveNext():
+        defn = it.Key
+        if defn.Name not in PRICE_PARAM_NAMES:
+            continue
+        try:
+            if u"Number" in str(defn.ParameterType):
+                to_remove.append(defn)
+        except Exception:
+            try:
+                if u"string" not in str(defn.GetDataType()).lower():
+                    to_remove.append(defn)
+            except Exception:
+                pass
+    removed = 0
+    for defn in to_remove:
+        try:
+            doc.ParameterBindings.Remove(defn)
+            removed += 1
+        except Exception:
+            pass
+    return removed
+
+t_migrate = Transaction(doc, u"Dekel - Migrate Price Params to TEXT")
+t_migrate.Start()
+try:
+    n_migrated = remove_old_number_bindings()
+    t_migrate.Commit()
+    if n_migrated:
+        print(u"  הומרו {} פרמטרי מחיר מ-NUMBER ל-TEXT (₪)".format(n_migrated))
+except Exception as e:
+    t_migrate.RollBack()
+    print(u"  [אזהרה] לא ניתן להמיר פרמטרים: {}".format(e))
 
 # בדוק ויצור פרמטרים חסרים
 existing_names = get_existing_param_names()
@@ -438,6 +477,7 @@ if not trays:
     import sys; sys.exit()
 
 updated = skipped = failed = 0
+grand_total = 0.0
 skipped_details = []   # [(element_id, description, reason), ...]
 failed_details  = []   # [(element_id, description, reason), ...]
 
@@ -567,8 +607,8 @@ for tray in trays:
         # כתוב פרמטרים ראשיים
         ok1 = set_param(PARAM_CODE,  code)
         ok2 = set_param_fuzzy(u"תיאור", title)
-        ok3 = set_param(PARAM_PRICE, float(price or 0))
-        ok4 = set_param(PARAM_TOTAL, total)
+        ok3 = set_param(PARAM_PRICE, u"₪{:,.2f}".format(float(price or 0)))
+        ok4 = set_param(PARAM_TOTAL, u"₪{:,.2f}".format(total))
 
         # debug: הצג מחיר לפסי צבירה
         if note in (u"BUSBAR", u"BUSBAR_FROM_DESC"):
@@ -579,15 +619,16 @@ for tray in trays:
         if addon_code:
             set_param(PARAM_ADDON_CODE,  addon_code)
             set_param(PARAM_ADDON_DESC,  addon_title)
-            set_param(PARAM_ADDON_PRICE, addon_price)
+            set_param(PARAM_ADDON_PRICE, u"₪{:,.2f}".format(float(addon_price)))
         else:
             # נקה פרמטרי תוספת אם לא רלוונטי
             set_param(PARAM_ADDON_CODE,  u"")
             set_param(PARAM_ADDON_DESC,  u"")
-            set_param(PARAM_ADDON_PRICE, 0.0)
+            set_param(PARAM_ADDON_PRICE, u"")
 
         if ok1 and ok2:
             updated += 1
+            grand_total += total
         else:
             fail_reasons = []
             if not ok1: fail_reasons.append(u"מספר סעיף")
@@ -703,14 +744,15 @@ if fittings and (BUSBAR_H_ELBOW or BUSBAR_V_ELBOW):
 
             ok1 = set_fit_param(PARAM_CODE, code)
             ok2 = set_fit_param(PARAM_DESC, title)
-            ok3 = set_fit_param(PARAM_PRICE, float(price) if price else 0.0)
-            ok4 = set_fit_param(PARAM_TOTAL, float(price) if price else 0.0)
+            ok3 = set_fit_param(PARAM_PRICE, u"₪{:,.2f}".format(float(price) if price else 0.0))
+            ok4 = set_fit_param(PARAM_TOTAL, u"₪{:,.2f}".format(float(price) if price else 0.0))
 
             print(u"  [DEBUG FIT] id={} code={} price={} dir={} ok=({},{},{})".format(
                 fit_id, code, price, direction, ok1, ok2, ok3))
 
             if ok1 and ok2:
                 fit_updated += 1
+                grand_total += float(price) if price else 0.0
             else:
                 fit_failed += 1
                 failed_details.append((fit_id, u"{}A".format(amps), u"פיטינג — נכשל בכתיבת פרמטרים"))
@@ -835,9 +877,9 @@ def _stat_badge(parent, x, y, value, label, clr, bg):
 
 
 def show_summary_dialog(total, updated, skipped, failed,
-                        skipped_details, failed_details):
+                        skipped_details, failed_details, grand_total=0.0):
 
-    frm = _make_form(u"Dekel Tool", 420, 330)
+    frm = _make_form(u"Dekel Tool", 420, 365)
 
     # פס צבע עליון
     _accent_stripe(frm, 0, 420)
@@ -877,17 +919,25 @@ def show_summary_dialog(total, updated, skipped, failed,
     lbl_sub.Size      = Size(380, 18)
     frm.Controls.Add(lbl_sub)
 
+    lbl_total = Label()
+    lbl_total.Text      = u"סכום כולל: ₪ {:,.2f}".format(grand_total)
+    lbl_total.Font      = Font(u"Segoe UI", 13, FontStyle.Bold)
+    lbl_total.ForeColor = ACCENT
+    lbl_total.Location  = Point(22, 126)
+    lbl_total.Size      = Size(380, 28)
+    frm.Controls.Add(lbl_total)
+
     # --- תיבות סטטיסטיקה ---
     bx = 22
-    by = 134
+    by = 168
     _stat_badge(frm, bx,       by, updated, u"עודכנו",  CLR_SUCCESS, CLR_SUCCESS_BG)
     _stat_badge(frm, bx + 155, by, skipped, u"דולגו",   CLR_WARNING, CLR_WARNING_BG)
     _stat_badge(frm, bx + 310 - 155, by, failed,  u"נכשלו",   CLR_ERROR,   CLR_ERROR_BG)
 
-    _separator(frm, 212, 420, 22)
+    _separator(frm, 246, 420, 22)
 
     # כפתורים
-    btn_y = 228
+    btn_y = 262
     if skipped_details or failed_details:
         btn_details = _btn(
             u"הצג פרטים ({})".format(len(skipped_details) + len(failed_details)),
@@ -910,7 +960,7 @@ def show_summary_dialog(total, updated, skipped, failed,
     lbl_ver.Text      = u"Yamit Bettman  |  v2.0"
     lbl_ver.Font      = Font(u"Segoe UI", 8)
     lbl_ver.ForeColor = TEXT_LIGHT
-    lbl_ver.Location  = Point(22, 282)
+    lbl_ver.Location  = Point(22, 316)
     lbl_ver.Size      = Size(380, 16)
     frm.Controls.Add(lbl_ver)
 
@@ -1077,20 +1127,9 @@ def _add_field(sd, doc, name):
     return None
 
 def _set_totals_and_sort(sd, total_field_name, sort_field_name=None):
-    from Autodesk.Revit.DB import ScheduleFieldDisplayType
-    sd.ShowGrandTotal      = True
-    sd.ShowGrandTotalCount = True
-    try:
-        sd.GrandTotalTitle = GRAND_TOTAL_TITLE
-    except Exception:
-        pass
-    for i in range(sd.GetFieldCount()):
-        try:
-            f = sd.GetField(i)
-            if total_field_name.lower() in f.GetName().lower():
-                f.DisplayType = ScheduleFieldDisplayType.Totals
-        except Exception:
-            pass
+    # Price params are TEXT type — grand total sum is shown in the summary dialog instead
+    sd.ShowGrandTotal      = False
+    sd.ShowGrandTotalCount = False
     if sort_field_name:
         try:
             from Autodesk.Revit.DB import ScheduleSortGroupField, ScheduleSortOrder
@@ -1237,7 +1276,7 @@ except Exception as e:
     print(u"שגיאה ביצירת טבלאות: {}".format(e))
 
 show_summary_dialog(len(trays) + len(fittings), updated, skipped, failed,
-                    skipped_details, failed_details)
+                    skipped_details, failed_details, grand_total)
 
 # ============================================================================
 # 6. הצגת אלמנט במודל — אם המשתמש בחר שורה מהטבלה
