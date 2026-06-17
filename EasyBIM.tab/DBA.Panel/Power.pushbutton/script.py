@@ -869,11 +869,14 @@ def _bq_del_view(name):
         except Exception: pass
 
 
-def _bq_ln(view, x1, y1, x2, y2):
+def _bq_ln(view, x1, y1, x2, y2, gstyle=None):
     from Autodesk.Revit.DB import Line
     p1 = XYZ(x1, y1, 0); p2 = XYZ(x2, y2, 0)
     if p1.DistanceTo(p2) < 1e-9: return
-    doc.Create.NewDetailCurve(view, Line.CreateBound(p1, p2))
+    dc = doc.Create.NewDetailCurve(view, Line.CreateBound(p1, p2))
+    if gstyle:
+        try: dc.LineStyle = gstyle
+        except Exception: pass
 
 
 def _bq_txt(view, tid, x, y, w, text):
@@ -891,6 +894,20 @@ def _bq_txt(view, tid, x, y, w, text):
     opts = TextNoteOptions(tid)
     opts.HorizontalAlignment = HorizontalTextAlignment.Right
     TextNote.Create(doc, view.Id, XYZ(x, y, 0), safe_w, text, opts)
+
+
+def _resolve_gstyle(keywords):
+    """Return a GraphicsStyle for the Lines sub-category matching any keyword (case-insensitive)."""
+    from Autodesk.Revit.DB import BuiltInCategory, GraphicsStyleType
+    try:
+        cat = doc.Settings.Categories.get_Item(BuiltInCategory.OST_Lines)
+        for sc in cat.SubCategories:
+            n = sc.Name.lower()
+            if any(k.lower() in n for k in keywords):
+                return sc.GetGraphicsStyle(GraphicsStyleType.Projection)
+    except Exception:
+        pass
+    return None
 
 
 def create_bq_drafting_view():
@@ -911,73 +928,70 @@ def create_bq_drafting_view():
     if tnt_id is None:
         print(u"[!] אין TextNoteTypes — מבט לא יכיל טקסט"); return view
 
-    tw = _BQ_CAT_W + _BQ_NOTE_W   # total table width
+    # The outer border and header row use a bold/wide line style (visual hierarchy).
+    # Internal cell dividers use the default thin line (pass None to _bq_ln).
+    border_gs = _resolve_gstyle([u"wide", u"Wide", u"bold", u"Bold",
+                                  u"heavy", u"Heavy", u"thick", u"Thick"])
 
-    # ── כותרת ראשית — מרחפת מעל הטבלה ללא מסגרת ─────────────────────────────
-    # ממוקמת מעל Y=0; הטבלה מתחילה ב-Y=0 ויורדת.
+    tw = _BQ_CAT_W + _BQ_NOTE_W
+
+    # Floating title above the table
     _bq_txt(view, bold_id,
-            _BQ_PAD_X,
-            _BQ_TTL_H - _BQ_PAD_Y,
+            _BQ_PAD_X, _BQ_TTL_H - _BQ_PAD_Y,
             tw - _BQ_PAD_X * 2,
-            u"\u05d4\u05e0\u05d7\u05d9\u05d5\u05ea \u05dc\u05db\u05ea\u05d1 "
-            u"\u05db\u05de\u05d5\u05d9\u05d5\u05ea \u2014 \u05d4\u05e2\u05e8\u05d5\u05ea "
-            u"\u05dc\u05de\u05d4\u05e0\u05d3\u05e1")
+            u"הנחיות לכתב "
+            u"כמויות — הערות "
+            u"למהנדס")
 
     cy = 0.0
 
-    # ── שורת כותרות עמודות ───────────────────────────────────────────────────
+    # Header row — all 4 outer sides bold, inner column divider thin
     ch = cy - _BQ_HDR_H
-    # מסגרת
-    _bq_ln(view, 0,         cy, tw, cy)
-    _bq_ln(view, 0,         ch, tw, ch)
-    _bq_ln(view, 0,         cy, 0,  ch)
-    _bq_ln(view, tw,        cy, tw, ch)
-    _bq_ln(view, _BQ_CAT_W, cy, _BQ_CAT_W, ch)
-    # טקסט — קטגוריה בתא ימני, הערה בתא שמאלי
+    _bq_ln(view, 0,          cy, tw,          cy,  border_gs)
+    _bq_ln(view, 0,          ch, tw,          ch,  border_gs)
+    _bq_ln(view, 0,          cy, 0,           ch,  border_gs)
+    _bq_ln(view, tw,         cy, tw,          ch,  border_gs)
+    _bq_ln(view, _BQ_CAT_W, cy, _BQ_CAT_W,  ch,  None)
     _bq_txt(view, bold_id,
             _BQ_PAD_X, cy - _BQ_PAD_Y,
             _BQ_CAT_W - _BQ_PAD_X * 2,
-            u"\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4")
+            u"קטגוריה")
     _bq_txt(view, bold_id,
             _BQ_CAT_W + _BQ_PAD_X, cy - _BQ_PAD_Y,
             _BQ_NOTE_W - _BQ_PAD_X * 2,
-            u"\u05d4\u05e2\u05e8\u05d4")
+            u"הערה")
     cy = ch
 
-    # ── שורות נתונים ─────────────────────────────────────────────────────────
-    note_col_inner_w_mm = (_BQ_NOTE_W - _BQ_PAD_X * 2) * 304.8   # mm
-    for cat, note in BQ_NOTES:
-        # גובה שורה: שורות \n מפורשות + הערכת שורות עטיפה אוטומטית
-        explicit_breaks = note.count(u"\n")
-        # הנח שכל 55 תווים עוטפים שורה בעמודת הערה
-        chars_per_line  = max(1, int(note_col_inner_w_mm / 3.0))
-        max_line_len    = max(len(s) for s in note.split(u"\n")) if note else 0
-        wrap_extra      = max(0, max_line_len // chars_per_line)
-        total_extra     = explicit_breaks + wrap_extra
-        rh  = _BQ_ROW_H + total_extra * _BQ_LINE_H
+    # Data rows — dynamic height; left/right borders bold, internals thin
+    note_inner_mm  = (_BQ_NOTE_W - _BQ_PAD_X * 2) * 304.8
+    chars_per_line = max(1, int(note_inner_mm / 3.0))
+
+    for idx, (cat, note) in enumerate(BQ_NOTES):
+        is_last     = (idx == len(BQ_NOTES) - 1)
+        explicit_nl = note.count(u"\n")
+        parts       = note.split(u"\n") if note else [u""]
+        max_len     = max(len(s) for s in parts)
+        wrap_extra  = max(0, max_len // chars_per_line)
+        rh  = _BQ_ROW_H + (explicit_nl + wrap_extra) * _BQ_LINE_H
         bot = cy - rh
 
-        # מסגרת השורה
-        _bq_ln(view, 0,         cy,  tw, cy)
-        _bq_ln(view, 0,         bot, tw, bot)
-        _bq_ln(view, 0,         cy,  0,  bot)
-        _bq_ln(view, tw,        cy,  tw, bot)
-        _bq_ln(view, _BQ_CAT_W, cy,  _BQ_CAT_W, bot)
+        _bq_ln(view, 0,          cy, 0,          bot, border_gs)
+        _bq_ln(view, tw,         cy, tw,          bot, border_gs)
+        _bq_ln(view, _BQ_CAT_W, cy, _BQ_CAT_W,  bot, None)
+        _bq_ln(view, 0, bot, tw, bot, border_gs if is_last else None)
 
-        # קטגוריה — Bold
         _bq_txt(view, bold_id,
                 _BQ_PAD_X, cy - _BQ_PAD_Y,
                 _BQ_CAT_W - _BQ_PAD_X * 2, cat)
-        # הערה — רגיל
         _bq_txt(view, tnt_id,
                 _BQ_CAT_W + _BQ_PAD_X, cy - _BQ_PAD_Y,
                 _BQ_NOTE_W - _BQ_PAD_X * 2, note)
         cy = bot
 
-    # קו תחתון סגירה
-    _bq_ln(view, 0, cy, tw, cy)
-    return view
+    if not BQ_NOTES:
+        _bq_ln(view, 0, cy, tw, cy, border_gs)
 
+    return view
 
 bq_view = None
 try:
