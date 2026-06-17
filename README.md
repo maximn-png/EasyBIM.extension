@@ -26,6 +26,10 @@ When someone on the team builds a new button and it gets approved, the update ex
 
 There is a file called `sync.bat` in the plugin folder. Double-click it — it downloads the latest changes and tells you when it is done. Then go to Revit and click **pyRevit tab → Reload** and the new buttons will appear.
 
+**Alternative: update from inside pyRevit**
+
+You can also pull the latest changes without leaving Revit. Go to the **pyRevit tab → Update** — pyRevit downloads the latest changes for you. Then click **pyRevit tab → Reload** and the new buttons will appear.
+
 The plugin folder is here:
 ```
 %APPDATA%\pyRevit\Extensions\EasyBIM.extension
@@ -100,6 +104,8 @@ You are now on your own branch. Any changes Claude Code makes will stay here unt
 Go to Revit and click **pyRevit tab → Reload**. Your new button appears in the ribbon right away. Click it and see if it does what you wanted. If something is wrong, go back to Claude Code, describe the issue, and reload again. Repeat until it works.
 
 This loop — describe → reload → test → describe again — is the whole development process.
+
+> **Note for developers:** Ideally your development folder and the folder Revit loads from should be the *same* folder. That is the whole point of the **edit → pyRevit Reload → test** loop: you edit files, and Revit runs those exact files — no copying, no build step, no separate deploy. If you develop in one location and Revit loads from another, your edits won't show up on reload and you'll waste time chasing changes that never reach Revit. Keep them as one and the same folder (the path under `%APPDATA%\pyRevit\Extensions\EasyBIM.extension`).
 
 ### What updates live vs. what requires a restart
 
