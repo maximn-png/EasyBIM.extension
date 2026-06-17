@@ -65,10 +65,15 @@ Then open Revit, go to **pyRevit tab → pyRevit Settings → Extensions**, find
 
 ### Building a button
 
-**Step 1 — Open the plugin folder in VS Code**
+**Step 1 — Sync and open**
+
+Every time you sit down to work, run these two commands first. The first pulls in any changes teammates have merged since you last worked. The second opens the plugin folder in VS Code.
 
 ```powershell
-code "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
+cd "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
+git fetch origin
+git merge origin/main
+code .
 ```
 
 **Step 2 — Start a Claude Code session**
@@ -212,6 +217,7 @@ GitHub keeps the full history of every change. If a button breaks something, we 
 |---|---|
 | Get access to the repo | Ask Maxim to add your GitHub username |
 | Set up for the first time | Run the `git clone` command above, enable in PyRevit Settings |
+| Sync before starting work | `git fetch origin` then `git merge origin/main` |
 | Start building a button | Open folder in VS Code, describe to Claude Code |
 | Test script changes | pyRevit tab → Reload (no restart needed) |
 | Test icon changes | Close and reopen Revit |
