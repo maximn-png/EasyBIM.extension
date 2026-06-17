@@ -881,19 +881,26 @@ def _bq_ln(view, x1, y1, x2, y2, gstyle=None):
 
 def _bq_txt(view, tid, x, y, w, text):
     """
-    RTL TextNote placement with strict width constraint.
-    origin = top-LEFT corner of the bounding box.
-    Width is clamped to at least 10mm to avoid Revit rejecting tiny values.
-    HorizontalTextAlignment.Right right-aligns Hebrew inside the box so text
-    never crosses the right edge (and padding keeps it off the left edge).
+    Place a right-aligned Hebrew TextNote.
+    Revit positions Right-aligned TextNotes with the XYZ coord at the
+    UPPER-RIGHT corner of the bounding box (not upper-left).
+    Callers must therefore pass the RIGHT edge of the text area as x.
+    Width is enforced both via Create() and by setting tn.Width afterward.
     """
     from Autodesk.Revit.DB import TextNote, TextNoteOptions, HorizontalTextAlignment
     if not text:
         return
-    safe_w = max(w, 10 * _MM)   # Revit rejects widths below ~5mm
+    safe_w = max(w, 10 * _MM)
     opts = TextNoteOptions(tid)
     opts.HorizontalAlignment = HorizontalTextAlignment.Right
-    TextNote.Create(doc, view.Id, XYZ(x, y, 0), safe_w, text, opts)
+    try:
+        tn = TextNote.Create(doc, view.Id, XYZ(x, y, 0), safe_w, text, opts)
+    except Exception:
+        tn = TextNote.Create(doc, view.Id, XYZ(x, y, 0), text, opts)
+    try:
+        tn.Width = safe_w
+    except Exception:
+        pass
 
 
 def _resolve_gstyle(keywords):
@@ -937,7 +944,7 @@ def create_bq_drafting_view():
 
     # Floating title above the table
     _bq_txt(view, bold_id,
-            _BQ_PAD_X, _BQ_TTL_H - _BQ_PAD_Y,
+            tw - _BQ_PAD_X, _BQ_TTL_H - _BQ_PAD_Y,
             tw - _BQ_PAD_X * 2,
             u"הנחיות לכתב "
             u"כמויות — הערות "
@@ -953,11 +960,11 @@ def create_bq_drafting_view():
     _bq_ln(view, tw,         cy, tw,          ch,  border_gs)
     _bq_ln(view, _BQ_CAT_W, cy, _BQ_CAT_W,  ch,  None)
     _bq_txt(view, bold_id,
-            _BQ_PAD_X, cy - _BQ_PAD_Y,
+            _BQ_CAT_W - _BQ_PAD_X, cy - _BQ_PAD_Y,
             _BQ_CAT_W - _BQ_PAD_X * 2,
             u"קטגוריה")
     _bq_txt(view, bold_id,
-            _BQ_CAT_W + _BQ_PAD_X, cy - _BQ_PAD_Y,
+            tw - _BQ_PAD_X, cy - _BQ_PAD_Y,
             _BQ_NOTE_W - _BQ_PAD_X * 2,
             u"הערה")
     cy = ch
@@ -981,10 +988,10 @@ def create_bq_drafting_view():
         _bq_ln(view, 0, bot, tw, bot, border_gs if is_last else None)
 
         _bq_txt(view, bold_id,
-                _BQ_PAD_X, cy - _BQ_PAD_Y,
+                _BQ_CAT_W - _BQ_PAD_X, cy - _BQ_PAD_Y,
                 _BQ_CAT_W - _BQ_PAD_X * 2, cat)
         _bq_txt(view, tnt_id,
-                _BQ_CAT_W + _BQ_PAD_X, cy - _BQ_PAD_Y,
+                tw - _BQ_PAD_X, cy - _BQ_PAD_Y,
                 _BQ_NOTE_W - _BQ_PAD_X * 2, note)
         cy = bot
 
