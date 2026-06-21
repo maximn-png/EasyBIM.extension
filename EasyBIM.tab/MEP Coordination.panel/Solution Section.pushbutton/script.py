@@ -1452,6 +1452,14 @@ class SolutionSectionDialog(object):
             self._result_section_view = new_sv
             self._show_result(results, selected_links, new_sv)
             self.cancelled = False
+            # Revit's main window steals focus after API transactions; bring
+            # the dialog back to the front.
+            try:
+                self._window.Topmost = True
+                self._window.Activate()
+                self._window.Topmost = False
+            except Exception:
+                pass
         except Exception as ex:
             run_btn.IsEnabled = True
             run_btn.Content   = u"▶  Run"
