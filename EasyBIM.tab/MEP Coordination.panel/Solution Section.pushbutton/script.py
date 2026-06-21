@@ -165,100 +165,6 @@ def find_section_vft():
     return None
 
 
-def get_all_viewport_types():
-    """Return {name_lower: element} for every viewport type in the document.
-
-    Must be called OUTSIDE any open transaction — element-type collectors
-    can silently return nothing while a transaction is active in Revit 2024.
-    Logs explicit warnings for every strategy so failures are visible.
-    """
-    import System
-    types = {}
-
-    # ── Strategy 1: DB.ViewportType by name ──────────────────────────────────
-    try:
-        for vt in DB.FilteredElementCollector(doc).OfClass(DB.ViewportType):
-            types[(vt.Name or u"").lower().strip()] = vt
-        logger.warning(u"[vpt-s1] found {}".format(len(types)))
-    except Exception as ex:
-        logger.warning(u"[vpt-s1] failed: {}".format(ex))
-
-    # ── Strategy 2: System.Type lookup via .NET reflection ───────────────────
-    if not types:
-        try:
-            dotnet_type = System.Type.GetType(
-                u"Autodesk.Revit.DB.ViewportType, RevitAPI")
-            if dotnet_type is not None:
-                for vt in DB.FilteredElementCollector(doc).OfClass(dotnet_type):
-                    types[(vt.Name or u"").lower().strip()] = vt
-            logger.warning(u"[vpt-s2] found {}".format(len(types)))
-        except Exception as ex:
-            logger.warning(u"[vpt-s2] failed: {}".format(ex))
-
-    # ── Strategy 3: scan ElementTypes; match .NET class name ─────────────────
-    if not types:
-        try:
-            scanned = 0
-            for et in DB.FilteredElementCollector(doc).WhereElementIsElementType():
-                scanned += 1
-                try:
-                    if u"viewport" in et.GetType().Name.lower():
-                        types[(et.Name or u"").lower().strip()] = et
-                except Exception:
-                    pass
-            logger.warning(u"[vpt-s3] scanned {} ETs, found {}".format(
-                scanned, len(types)))
-        except Exception as ex:
-            logger.warning(u"[vpt-s3] failed: {}".format(ex))
-
-    # ── Strategy 4: OfClass via .NET type of current viewport's type ─────────
-    if not types:
-        try:
-            any_vp = (DB.FilteredElementCollector(doc)
-                      .OfClass(DB.Viewport)
-                      .WhereElementIsNotElementType()
-                      .FirstOrDefault())
-            if any_vp is not None:
-                tid = any_vp.GetTypeId()
-                cur = doc.GetElement(tid) if tid != DB.ElementId.InvalidElementId else None
-                if cur is not None:
-                    for et in DB.FilteredElementCollector(doc).OfClass(cur.GetType()):
-                        types[(et.Name or u"").lower().strip()] = et
-            logger.warning(u"[vpt-s4] found {}".format(len(types)))
-        except Exception as ex:
-            logger.warning(u"[vpt-s4] failed: {}".format(ex))
-
-    # ── Strategy 5: GetValidTypes() on any placed viewport ───────────────────
-    if not types:
-        try:
-            any_vp = (DB.FilteredElementCollector(doc)
-                      .OfClass(DB.Viewport)
-                      .WhereElementIsNotElementType()
-                      .FirstOrDefault())
-            if any_vp is not None:
-                for vid in any_vp.GetValidTypes():
-                    et = doc.GetElement(vid)
-                    if et is not None:
-                        types[(et.Name or u"").lower().strip()] = et
-            logger.warning(u"[vpt-s5] found {}".format(len(types)))
-        except Exception as ex:
-            logger.warning(u"[vpt-s5] failed: {}".format(ex))
-
-    return types
-
-
-def find_viewport_type(name, hint_vp=None):
-    """Return viewport type by name (case-insensitive), or None."""
-    all_types = get_all_viewport_types(hint_vp=hint_vp)
-    result = all_types.get(name.lower().strip())
-    if result is None:
-        logger.warning(
-            u"Viewport type '{}' not found. Available: {}".format(
-                name, u", ".join(u"'{}'".format(k) for k in sorted(all_types))
-            )
-        )
-    return result
-
 
 def _sheet_vp_rects(sheet, exclude_view_id=None):
     """Return (min_x, min_y, max_x, max_y) tuples for viewports on the sheet.
@@ -564,19 +470,56 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
             sol_vp = DB.Viewport.Create(doc, sheet.Id, sv.Id,
                                         DB.XYZ(x_sol, y_sol, 0))
 
-            # ── Step C: apply viewport types ──────────────────────────────────
-            vp_bubble = find_viewport_type(u"Bubble Scale", hint_vp=existing_vp)
-            if vp_bubble:
+            # ── Step C: apply viewport types ─────────────────────────────────────
+            # GetValidTypes() on the newly created viewport returns valid type IDs.
+            # Viewport type elements don't expose .Name; read it via built-in params.
+            _vp_types = {}
+            try:
+                for _vid in sol_vp.GetValidTypes():
+                    try:
+                        _et = doc.GetElement(_vid)
+                        if _et is None:
+                            continue
+                        _name = None
+                        try:
+                            _name = _et.Name
+                        except Exception:
+                            pass
+                        if not _name:
+                            for _bip in (DB.BuiltInParameter.SYMBOL_NAME_PARAM,
+                                         DB.BuiltInParameter.ALL_MODEL_TYPE_NAME):
+                                try:
+                                    _p = _et.get_Parameter(_bip)
+                                    if _p:
+                                        _name = _p.AsString()
+                                        if _name:
+                                            break
+                                except Exception:
+                                    pass
+                        if _name:
+                            _vp_types[_name.lower().strip()] = _vid
+                    except Exception:
+                        pass
+            except Exception as _ex:
+                logger.warning(u"GetValidTypes failed: {}".format(_ex))
+
+            _bubble_tid = _vp_types.get(u"bubble scale")
+            _empty_tid  = _vp_types.get(u"empty")
+
+            if _bubble_tid:
                 try:
-                    existing_vp.ChangeTypeId(vp_bubble.Id)
+                    existing_vp.ChangeTypeId(_bubble_tid)
                 except Exception as e:
-                    logger.warning(u"ChangeTypeId 'Bubble Scale' failed: {}".format(e))
-            vp_empty = find_viewport_type(u"Empty", hint_vp=sol_vp)
-            if vp_empty:
+                    logger.warning(u"ChangeTypeId 'Bubble Scale': {}".format(e))
+            else:
+                logger.warning(u"Viewport type 'Bubble Scale' not found in project")
+            if _empty_tid:
                 try:
-                    sol_vp.ChangeTypeId(vp_empty.Id)
+                    sol_vp.ChangeTypeId(_empty_tid)
                 except Exception as e:
-                    logger.warning(u"ChangeTypeId 'Empty' failed: {}".format(e))
+                    logger.warning(u"ChangeTypeId 'Empty': {}".format(e))
+            else:
+                logger.warning(u"Viewport type 'Empty' not found in project")
 
             t3.Commit()
 
