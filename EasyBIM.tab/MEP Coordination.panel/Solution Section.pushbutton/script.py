@@ -128,21 +128,19 @@ def find_view_template(name):
 def build_section_box_from_view(view):
     """Build a valid BoundingBoxXYZ for ViewSection.CreateSection.
 
-    The raw CropBox can have non-unit basis vectors and unset MinEnabled/
-    MaxEnabled flags, which cause CreateSection to throw. This function
-    rebuilds the box from the view's guaranteed-orthonormal direction vectors.
+    CropBox.Transform can have non-unit basis vectors and unset MinEnabled/
+    MaxEnabled flags. Rebuild from the CropBox's own (normalized) axes rather
+    than view.ViewDirection, which can be opposite to the CropBox's Z convention
+    and would flip the new section to face the wrong direction.
     """
-    right   = view.RightDirection   # guaranteed unit length
-    up      = view.UpDirection
-    forward = view.ViewDirection    # depth axis
-
     crop = view.CropBox
+    ct   = crop.Transform
 
     t = DB.Transform.Identity
-    t.BasisX = right
-    t.BasisY = up
-    t.BasisZ = forward
-    t.Origin = crop.Transform.Origin
+    t.BasisX = ct.BasisX.Normalize()
+    t.BasisY = ct.BasisY.Normalize()
+    t.BasisZ = ct.BasisZ.Normalize()
+    t.Origin = ct.Origin
 
     c_min, c_max = crop.Min, crop.Max
     z_near = min(c_min.Z, c_max.Z)
@@ -217,20 +215,28 @@ def stamp_element(elem, source_uid):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def collect_mep_ids_in_volume(link_doc, host_crop_box, link_transform):
+    """Collect MEP element IDs from a linked model within the section volume.
+
+    CropBox.Min/Max are in the box's LOCAL coordinate system, not world space.
+    Apply CropBox.Transform first to get world corners, then transform to link space.
+    """
     try:
         inv = link_transform.Inverse
     except Exception:
         return []
 
+    ct = host_crop_box.Transform   # local → world
     mn = host_crop_box.Min
     mx = host_crop_box.Max
-    corners = [
-        DB.XYZ(mn.X, mn.Y, mn.Z), DB.XYZ(mx.X, mn.Y, mn.Z),
-        DB.XYZ(mn.X, mx.Y, mn.Z), DB.XYZ(mx.X, mx.Y, mn.Z),
-        DB.XYZ(mn.X, mn.Y, mx.Z), DB.XYZ(mx.X, mn.Y, mx.Z),
-        DB.XYZ(mn.X, mx.Y, mx.Z), DB.XYZ(mx.X, mx.Y, mx.Z),
+
+    # 8 box corners: local → world → link-local
+    world_corners = [
+        ct.OfPoint(DB.XYZ(x, y, z))
+        for x in [mn.X, mx.X]
+        for y in [mn.Y, mx.Y]
+        for z in [mn.Z, mx.Z]
     ]
-    lc = [inv.OfPoint(c) for c in corners]
+    lc = [inv.OfPoint(wc) for wc in world_corners]
     outline = DB.Outline(
         DB.XYZ(min(c.X for c in lc), min(c.Y for c in lc), min(c.Z for c in lc)),
         DB.XYZ(max(c.X for c in lc), max(c.Y for c in lc), max(c.Z for c in lc)),
@@ -320,12 +326,12 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
         t1.Commit()
 
         # ── Txn 2: create solution section view ───────────────────────────────
+        # Duplicate (not CreateSection) so position, orientation and CropBox are
+        # inherited exactly — avoids all BoundingBoxXYZ axis-convention guessing.
         t2 = DB.Transaction(doc, u"EasyBIM: Create solution section")
         t2.Start()
-        vft = find_section_vft()
-        if vft is None:
-            raise Exception(u"No section ViewFamilyType found in model.")
-        sv = DB.ViewSection.CreateSection(doc, vft.Id, build_section_box_from_view(existing_section))
+        new_view_id = existing_section.Duplicate(DB.ViewDuplicateOption.Duplicate)
+        sv = doc.GetElement(new_view_id)
         # Ensure unique view name
         existing_names = set(
             v.Name for v in DB.FilteredElementCollector(doc).OfClass(DB.View)
@@ -341,6 +347,10 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
             sv.ViewTemplateId = tmpl.Id
         else:
             try:
+                sv.ViewTemplateId = DB.ElementId.InvalidElementId
+            except Exception:
+                pass
+            try:
                 sv.Scale = SCALE
             except Exception:
                 pass
@@ -351,20 +361,82 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
         if sheet is not None:
             t3 = DB.Transaction(doc, u"EasyBIM: Place solution section on sheet")
             t3.Start()
+
+            # Estimate viewport width on sheet: CropBox horizontal extent / scale.
+            crop = existing_section.CropBox
+            mn_c, mx_c = crop.Min, crop.Max
+            raw_scale = existing_section.Scale
+            view_scale = float(raw_scale) if raw_scale and raw_scale > 0 else float(SCALE)
+            crop_sheet_w = abs(mx_c.X - mn_c.X) / view_scale
+            GAP = 0.1   # ft gap between viewports (≈ 30 mm)
+
+            # Get the sheet's own bounds so we never place outside it.
+            try:
+                sl = sheet.Outline
+                sheet_right  = sl.Max.U
+                sheet_top    = sl.Max.V
+                sheet_bottom = sl.Min.V
+            except Exception:
+                sheet_right  = 2.5    # conservative A1 width in ft
+                sheet_top    = 1.8
+                sheet_bottom = 0.0
+            sheet_center_y = (sheet_top + sheet_bottom) / 2.0
+            MARGIN = 0.1  # ft from sheet edge
+
+            # Scan existing viewports: rightmost X edge + average Y centre.
+            max_right = 0.0
+            y_sum     = 0.0
+            y_count   = 0
+            for vp_id in sheet.GetAllViewports():
+                vp = doc.GetElement(vp_id)
+                if vp is None:
+                    continue
+                try:
+                    ol = vp.GetBoxOutline()
+                    max_right = max(max_right, ol.MaximumPoint.X)
+                    y_sum += vp.GetBoxCenter().Y
+                    y_count += 1
+                except Exception:
+                    pass
+
+            # Two viewports side by side: existing + gap + solution.
+            both_w = crop_sheet_w + GAP + crop_sheet_w
+            right_start = max_right + GAP if max_right > 0.01 else MARGIN
+
+            if right_start + both_w + MARGIN <= sheet_right:
+                # Enough room to the right of existing viewports.
+                anchor_x_existing = right_start + crop_sheet_w / 2.0
+                anchor_y = (y_sum / y_count) if y_count > 0 else sheet_center_y
+            else:
+                # Not enough room — place from the left side, centred vertically.
+                anchor_x_existing = MARGIN + crop_sheet_w / 2.0
+                anchor_y = sheet_center_y
+
+            # Step A: place existing section (or reuse if already on this sheet).
             existing_vp = None
             for vp_id in sheet.GetAllViewports():
                 vp = doc.GetElement(vp_id)
-                if vp.ViewId == existing_section.Id:
+                if vp and vp.ViewId == existing_section.Id:
                     existing_vp = vp
                     break
-            if existing_vp:
-                center = existing_vp.GetBoxCenter()
-                outline_vp = existing_vp.GetBoxOutline()
-                w = outline_vp.MaximumPoint.X - outline_vp.MinimumPoint.X
-                placement = DB.XYZ(center.X + w + 0.08, center.Y, 0)
-            else:
-                placement = DB.XYZ(0.5, 0.5, 0)
-            DB.Viewport.Create(doc, sheet.Id, sv.Id, placement)
+            if existing_vp is None:
+                existing_vp = DB.Viewport.Create(
+                    doc, sheet.Id, existing_section.Id,
+                    DB.XYZ(anchor_x_existing, anchor_y, 0)
+                )
+
+            # Step B: place solution section directly to the right of existing viewport.
+            try:
+                ex_ol       = existing_vp.GetBoxOutline()
+                ex_right    = ex_ol.MaximumPoint.X
+                ex_center_y = existing_vp.GetBoxCenter().Y
+            except Exception:
+                ex_right    = anchor_x_existing + crop_sheet_w / 2.0
+                ex_center_y = anchor_y
+
+            DB.Viewport.Create(doc, sheet.Id, sv.Id,
+                               DB.XYZ(ex_right + GAP + crop_sheet_w / 2.0,
+                                      ex_center_y, 0))
             t3.Commit()
 
         tg.Assimilate()
