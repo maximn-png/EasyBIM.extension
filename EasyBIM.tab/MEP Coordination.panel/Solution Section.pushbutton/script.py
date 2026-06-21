@@ -165,6 +165,151 @@ def find_section_vft():
     return None
 
 
+def get_all_viewport_types():
+    """Return {name_lower: element} for every viewport type in the document.
+
+    Must be called OUTSIDE any open transaction — element-type collectors
+    can silently return nothing while a transaction is active in Revit 2024.
+    Logs explicit warnings for every strategy so failures are visible.
+    """
+    import System
+    types = {}
+
+    # ── Strategy 1: DB.ViewportType by name ──────────────────────────────────
+    try:
+        for vt in DB.FilteredElementCollector(doc).OfClass(DB.ViewportType):
+            types[(vt.Name or u"").lower().strip()] = vt
+        logger.warning(u"[vpt-s1] found {}".format(len(types)))
+    except Exception as ex:
+        logger.warning(u"[vpt-s1] failed: {}".format(ex))
+
+    # ── Strategy 2: System.Type lookup via .NET reflection ───────────────────
+    if not types:
+        try:
+            dotnet_type = System.Type.GetType(
+                u"Autodesk.Revit.DB.ViewportType, RevitAPI")
+            if dotnet_type is not None:
+                for vt in DB.FilteredElementCollector(doc).OfClass(dotnet_type):
+                    types[(vt.Name or u"").lower().strip()] = vt
+            logger.warning(u"[vpt-s2] found {}".format(len(types)))
+        except Exception as ex:
+            logger.warning(u"[vpt-s2] failed: {}".format(ex))
+
+    # ── Strategy 3: scan ElementTypes; match .NET class name ─────────────────
+    if not types:
+        try:
+            scanned = 0
+            for et in DB.FilteredElementCollector(doc).WhereElementIsElementType():
+                scanned += 1
+                try:
+                    if u"viewport" in et.GetType().Name.lower():
+                        types[(et.Name or u"").lower().strip()] = et
+                except Exception:
+                    pass
+            logger.warning(u"[vpt-s3] scanned {} ETs, found {}".format(
+                scanned, len(types)))
+        except Exception as ex:
+            logger.warning(u"[vpt-s3] failed: {}".format(ex))
+
+    # ── Strategy 4: OfClass via .NET type of current viewport's type ─────────
+    if not types:
+        try:
+            any_vp = (DB.FilteredElementCollector(doc)
+                      .OfClass(DB.Viewport)
+                      .WhereElementIsNotElementType()
+                      .FirstOrDefault())
+            if any_vp is not None:
+                tid = any_vp.GetTypeId()
+                cur = doc.GetElement(tid) if tid != DB.ElementId.InvalidElementId else None
+                if cur is not None:
+                    for et in DB.FilteredElementCollector(doc).OfClass(cur.GetType()):
+                        types[(et.Name or u"").lower().strip()] = et
+            logger.warning(u"[vpt-s4] found {}".format(len(types)))
+        except Exception as ex:
+            logger.warning(u"[vpt-s4] failed: {}".format(ex))
+
+    # ── Strategy 5: GetValidTypes() on any placed viewport ───────────────────
+    if not types:
+        try:
+            any_vp = (DB.FilteredElementCollector(doc)
+                      .OfClass(DB.Viewport)
+                      .WhereElementIsNotElementType()
+                      .FirstOrDefault())
+            if any_vp is not None:
+                for vid in any_vp.GetValidTypes():
+                    et = doc.GetElement(vid)
+                    if et is not None:
+                        types[(et.Name or u"").lower().strip()] = et
+            logger.warning(u"[vpt-s5] found {}".format(len(types)))
+        except Exception as ex:
+            logger.warning(u"[vpt-s5] failed: {}".format(ex))
+
+    return types
+
+
+def find_viewport_type(name, hint_vp=None):
+    """Return viewport type by name (case-insensitive), or None."""
+    all_types = get_all_viewport_types(hint_vp=hint_vp)
+    result = all_types.get(name.lower().strip())
+    if result is None:
+        logger.warning(
+            u"Viewport type '{}' not found. Available: {}".format(
+                name, u", ".join(u"'{}'".format(k) for k in sorted(all_types))
+            )
+        )
+    return result
+
+
+def _sheet_vp_rects(sheet, exclude_view_id=None):
+    """Return (min_x, min_y, max_x, max_y) tuples for viewports on the sheet.
+
+    Optionally skip the viewport that belongs to exclude_view_id (so we don't
+    count the existing section against itself when it's already on the sheet).
+    """
+    rects = []
+    for vp_id in sheet.GetAllViewports():
+        vp = doc.GetElement(vp_id)
+        if vp is None:
+            continue
+        if exclude_view_id is not None and vp.ViewId == exclude_view_id:
+            continue
+        try:
+            ol = vp.GetBoxOutline()
+            rects.append((ol.MinimumPoint.X, ol.MinimumPoint.Y,
+                           ol.MaximumPoint.X, ol.MaximumPoint.Y))
+        except Exception:
+            pass
+    return rects
+
+
+def _vp_overlaps(cx, cy, w, h, rects, pad=0.05):
+    l, r = cx - w / 2.0 - pad, cx + w / 2.0 + pad
+    b, t = cy - h / 2.0 - pad, cy + h / 2.0 + pad
+    for (rl, rb, rr, rt) in rects:
+        if l < rr and r > rl and b < rt and t > rb:
+            return True
+    return False
+
+
+def _find_sheet_spot(rects, s_left, s_right, s_bot, s_top,
+                     vp_w, vp_h, margin=0.1, start_x=None, preferred_y=None):
+    """Scan left→right, row-by-row until a non-overlapping centre is found."""
+    x = start_x if start_x is not None else s_left + margin + vp_w / 2.0
+    y = preferred_y if preferred_y is not None else (s_top + s_bot) / 2.0
+    step = max(vp_w / 6.0, 0.04)
+    for _ in range(400):
+        if x + vp_w / 2.0 + margin > s_right:
+            # Wrap: start a new row below
+            x = s_left + margin + vp_w / 2.0
+            y -= (vp_h + margin * 2.0)
+            if y - vp_h / 2.0 < s_bot + margin:
+                break
+        if not _vp_overlaps(x, y, vp_w, vp_h, rects):
+            return x, y
+        x += step
+    return x, y   # best-effort fallback
+
+
 def get_or_create_workset(name):
     if not doc.IsWorkshared:
         return None
@@ -362,81 +507,77 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
             t3 = DB.Transaction(doc, u"EasyBIM: Place solution section on sheet")
             t3.Start()
 
-            # Estimate viewport width on sheet: CropBox horizontal extent / scale.
+            # Estimate viewport dimensions on sheet from CropBox and scale.
             crop = existing_section.CropBox
             mn_c, mx_c = crop.Min, crop.Max
             raw_scale = existing_section.Scale
             view_scale = float(raw_scale) if raw_scale and raw_scale > 0 else float(SCALE)
-            crop_sheet_w = abs(mx_c.X - mn_c.X) / view_scale
-            GAP = 0.1   # ft gap between viewports (≈ 30 mm)
+            vp_w = abs(mx_c.X - mn_c.X) / view_scale
+            vp_h = abs(mx_c.Y - mn_c.Y) / view_scale + 0.08  # +0.08 ft for title label
+            MARGIN = 0.1
 
-            # Get the sheet's own bounds so we never place outside it.
+            # Sheet bounds.
             try:
                 sl = sheet.Outline
-                sheet_right  = sl.Max.U
-                sheet_top    = sl.Max.V
-                sheet_bottom = sl.Min.V
+                s_left, s_right = sl.Min.U, sl.Max.U
+                s_bot,  s_top   = sl.Min.V, sl.Max.V
             except Exception:
-                sheet_right  = 2.5    # conservative A1 width in ft
-                sheet_top    = 1.8
-                sheet_bottom = 0.0
-            sheet_center_y = (sheet_top + sheet_bottom) / 2.0
-            MARGIN = 0.1  # ft from sheet edge
+                s_left, s_right = 0.0, 2.5
+                s_bot,  s_top   = 0.0, 1.8
+            sheet_mid_y = (s_top + s_bot) / 2.0
 
-            # Scan existing viewports: rightmost X edge + average Y centre.
-            max_right = 0.0
-            y_sum     = 0.0
-            y_count   = 0
-            for vp_id in sheet.GetAllViewports():
-                vp = doc.GetElement(vp_id)
-                if vp is None:
-                    continue
-                try:
-                    ol = vp.GetBoxOutline()
-                    max_right = max(max_right, ol.MaximumPoint.X)
-                    y_sum += vp.GetBoxCenter().Y
-                    y_count += 1
-                except Exception:
-                    pass
-
-            # Two viewports side by side: existing + gap + solution.
-            both_w = crop_sheet_w + GAP + crop_sheet_w
-            right_start = max_right + GAP if max_right > 0.01 else MARGIN
-
-            if right_start + both_w + MARGIN <= sheet_right:
-                # Enough room to the right of existing viewports.
-                anchor_x_existing = right_start + crop_sheet_w / 2.0
-                anchor_y = (y_sum / y_count) if y_count > 0 else sheet_center_y
-            else:
-                # Not enough room — place from the left side, centred vertically.
-                anchor_x_existing = MARGIN + crop_sheet_w / 2.0
-                anchor_y = sheet_center_y
-
-            # Step A: place existing section (or reuse if already on this sheet).
+            # ── Step A: place/locate existing section on sheet ────────────────
             existing_vp = None
             for vp_id in sheet.GetAllViewports():
                 vp = doc.GetElement(vp_id)
                 if vp and vp.ViewId == existing_section.Id:
                     existing_vp = vp
                     break
+
             if existing_vp is None:
+                # Build occupied list excluding the existing section itself
+                occ = _sheet_vp_rects(sheet, exclude_view_id=existing_section.Id)
+                avg_y = (sum((r[1] + r[3]) / 2.0 for r in occ) / len(occ)
+                         if occ else sheet_mid_y)
+                x_ex, y_ex = _find_sheet_spot(
+                    occ, s_left, s_right, s_bot, s_top,
+                    vp_w, vp_h, MARGIN, preferred_y=avg_y
+                )
                 existing_vp = DB.Viewport.Create(
-                    doc, sheet.Id, existing_section.Id,
-                    DB.XYZ(anchor_x_existing, anchor_y, 0)
+                    doc, sheet.Id, existing_section.Id, DB.XYZ(x_ex, y_ex, 0)
                 )
 
-            # Step B: place solution section directly to the right of existing viewport.
+            # ── Step B: place solution section next to existing, no overlap ───
+            # Collect occupied rects including the just-placed existing viewport.
+            occ2 = _sheet_vp_rects(sheet, exclude_view_id=sv.Id)
             try:
                 ex_ol       = existing_vp.GetBoxOutline()
-                ex_right    = ex_ol.MaximumPoint.X
-                ex_center_y = existing_vp.GetBoxCenter().Y
+                sol_start_x = ex_ol.MaximumPoint.X + MARGIN + vp_w / 2.0
+                sol_pref_y  = existing_vp.GetBoxCenter().Y
             except Exception:
-                ex_right    = anchor_x_existing + crop_sheet_w / 2.0
-                ex_center_y = anchor_y
+                sol_start_x = s_left + MARGIN + vp_w / 2.0
+                sol_pref_y  = sheet_mid_y
+            x_sol, y_sol = _find_sheet_spot(
+                occ2, s_left, s_right, s_bot, s_top,
+                vp_w, vp_h, MARGIN, start_x=sol_start_x, preferred_y=sol_pref_y
+            )
+            sol_vp = DB.Viewport.Create(doc, sheet.Id, sv.Id,
+                                        DB.XYZ(x_sol, y_sol, 0))
 
-            DB.Viewport.Create(doc, sheet.Id, sv.Id,
-                               DB.XYZ(ex_right + GAP + crop_sheet_w / 2.0,
-                                      ex_center_y, 0))
+            # ── Step C: apply viewport types ──────────────────────────────────
+            vp_bubble = find_viewport_type(u"Bubble Scale", hint_vp=existing_vp)
+            if vp_bubble:
+                try:
+                    existing_vp.ChangeTypeId(vp_bubble.Id)
+                except Exception as e:
+                    logger.warning(u"ChangeTypeId 'Bubble Scale' failed: {}".format(e))
+            vp_empty = find_viewport_type(u"Empty", hint_vp=sol_vp)
+            if vp_empty:
+                try:
+                    sol_vp.ChangeTypeId(vp_empty.Id)
+                except Exception as e:
+                    logger.warning(u"ChangeTypeId 'Empty' failed: {}".format(e))
+
             t3.Commit()
 
         tg.Assimilate()
