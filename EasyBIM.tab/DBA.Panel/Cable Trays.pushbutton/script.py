@@ -40,8 +40,17 @@ from Autodesk.Revit.DB import (
     InstanceBinding,
     ExternalDefinitionCreationOptions,
     ElementId,
-    BuiltInParameterGroup,
 )
+try:
+    from Autodesk.Revit.DB import BuiltInParameterGroup as _BPG
+    _PARAM_GROUP = _BPG.INVALID
+except (ImportError, AttributeError):
+    from Autodesk.Revit.DB import GroupTypeId as _GTI
+    _PARAM_GROUP = next(
+        (getattr(_GTI, n) for n in ('Invalid', 'Other', 'General', 'Data')
+         if getattr(_GTI, n, None) is not None),
+        None
+    )
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as CList
 from pyrevit import revit
@@ -148,7 +157,7 @@ def create_missing_shared_params(missing):
                 continue
             doc.ParameterBindings.Insert(
                 defn, InstanceBinding(cat_set),
-                BuiltInParameterGroup.INVALID)   # "Other" group
+                _PARAM_GROUP)   # "Other" group
             print(u"  נוצר: {}".format(name))
     finally:
         doc.Application.SharedParametersFilename = old_spf or ""
@@ -237,7 +246,7 @@ def ensure_fitting_category():
         new_binding = InstanceBinding(cats)
         doc.ParameterBindings.ReInsert(
             defn, new_binding,
-            BuiltInParameterGroup.INVALID)
+            _PARAM_GROUP)
         added += 1
 
     print(u"  [DEBUG] ensure_fitting: found {} params, updated {}".format(
