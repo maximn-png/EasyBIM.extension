@@ -26,9 +26,27 @@ import System
 
 from Autodesk.Revit.DB import (
     Transaction, BuiltInCategory, FilteredElementCollector,
-    CategorySet, InstanceBinding, ElementId, BuiltInParameterGroup,
+    CategorySet, InstanceBinding, ElementId,
     BuiltInParameter, XYZ,
 )
+try:
+    from Autodesk.Revit.DB import BuiltInParameterGroup as _BPG
+    _PARAM_GROUP = _BPG.INVALID
+except (ImportError, AttributeError):
+    # Revit 2025+ removed BuiltInParameterGroup; GroupTypeId is the replacement.
+    # Try attribute names in order — the available name varies by sub-version.
+    from Autodesk.Revit.DB import GroupTypeId as _GTI
+    _PARAM_GROUP = next(
+        (getattr(_GTI, n) for n in ('Invalid', 'Other', 'General', 'Data')
+         if getattr(_GTI, n, None) is not None),
+        None
+    )
+
+def _insert_binding(doc, defn, binding):
+    doc.ParameterBindings.Insert(defn, binding, _PARAM_GROUP)
+
+def _reinsert_binding(doc, defn, binding):
+    doc.ParameterBindings.ReInsert(defn, binding, _PARAM_GROUP)
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as CList
 from pyrevit import revit
@@ -267,7 +285,7 @@ def create_params(missing):
         for n, _ in missing:
             d = grp.Definitions.get_Item(n)
             if d:
-                doc.ParameterBindings.Insert(d, InstanceBinding(cats), BuiltInParameterGroup.INVALID)
+                _insert_binding(doc, d, InstanceBinding(cats))
                 print(u"  נוצר: {}".format(n))
     finally:
         doc.Application.SharedParametersFilename = old or ""
@@ -291,7 +309,7 @@ def ensure_cats():
         cats = b.Categories
         for cat in tgt:
             cats.Insert(cat)
-        doc.ParameterBindings.ReInsert(d, InstanceBinding(cats), BuiltInParameterGroup.INVALID)
+        _reinsert_binding(doc, d, InstanceBinding(cats))
 
 
 missing = [(n, t) for n, t in PARAM_DEFS if n not in get_existing()]
