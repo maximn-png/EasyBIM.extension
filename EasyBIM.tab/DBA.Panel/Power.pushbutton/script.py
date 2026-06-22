@@ -35,7 +35,7 @@ try:
 except ImportError:
     # Revit 2025+ fallback using GroupTypeId
     from Autodesk.Revit.DB import GroupTypeId
-    _PARAM_GROUP = GroupTypeId.Other
+    _PARAM_GROUP = GroupTypeId.Invalid
 
 def _insert_binding(doc, defn, binding):
     doc.ParameterBindings.Insert(defn, binding, _PARAM_GROUP)
