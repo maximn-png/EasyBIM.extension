@@ -432,7 +432,7 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
                 s_bot,  s_top   = 0.0, 1.8
             sheet_mid_y = (s_top + s_bot) / 2.0
 
-            # ── Step A: place/locate existing section on sheet ────────────────
+            # ── Step A: check whether existing section is already on the sheet ──
             existing_vp = None
             for vp_id in sheet.GetAllViewports():
                 vp = doc.GetElement(vp_id)
@@ -440,35 +440,44 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
                     existing_vp = vp
                     break
 
-            if existing_vp is None:
-                # Build occupied list excluding the existing section itself
-                occ = _sheet_vp_rects(sheet, exclude_view_id=existing_section.Id)
+            # ── Step B: place viewports side-by-side (solution LEFT, existing RIGHT)
+            # Viewport centers are calculated directly from known geometry to
+            # avoid relying on GetBoxOutline() which is unreliable for freshly
+            # created viewports inside a transaction.
+            if existing_vp is not None:
+                # Existing is already placed — put solution directly to its left.
+                try:
+                    ex_cx = existing_vp.GetBoxCenter().X
+                    ex_cy = existing_vp.GetBoxCenter().Y
+                except Exception:
+                    ex_cx = (s_left + s_right) / 2.0
+                    ex_cy = sheet_mid_y
+                x_sol = max(s_left + MARGIN + vp_w / 2.0,
+                            ex_cx - vp_w - MARGIN)
+                y_sol = ex_cy
+                sol_vp = DB.Viewport.Create(doc, sheet.Id, sv.Id,
+                                            DB.XYZ(x_sol, y_sol, 0))
+            else:
+                # Neither is on the sheet — find the leftmost open spot for
+                # solution, then place existing directly to its right at the
+                # same Y (same row, guaranteed side-by-side).
+                occ = _sheet_vp_rects(sheet)
                 avg_y = (sum((r[1] + r[3]) / 2.0 for r in occ) / len(occ)
                          if occ else sheet_mid_y)
-                x_ex, y_ex = _find_sheet_spot(
+                x_sol, y_sol = _find_sheet_spot(
                     occ, s_left, s_right, s_bot, s_top,
-                    vp_w, vp_h, MARGIN, preferred_y=avg_y
+                    vp_w, vp_h, MARGIN,
+                    start_x=s_left + MARGIN + vp_w / 2.0,
+                    preferred_y=avg_y
                 )
+                sol_vp = DB.Viewport.Create(doc, sheet.Id, sv.Id,
+                                            DB.XYZ(x_sol, y_sol, 0))
+                # Existing center = solution center + one viewport width + gap
+                x_ex = x_sol + vp_w + MARGIN
                 existing_vp = DB.Viewport.Create(
-                    doc, sheet.Id, existing_section.Id, DB.XYZ(x_ex, y_ex, 0)
+                    doc, sheet.Id, existing_section.Id,
+                    DB.XYZ(x_ex, y_sol, 0)
                 )
-
-            # ── Step B: place solution section next to existing, no overlap ───
-            # Collect occupied rects including the just-placed existing viewport.
-            occ2 = _sheet_vp_rects(sheet, exclude_view_id=sv.Id)
-            try:
-                ex_ol       = existing_vp.GetBoxOutline()
-                sol_start_x = ex_ol.MaximumPoint.X + MARGIN + vp_w / 2.0
-                sol_pref_y  = existing_vp.GetBoxCenter().Y
-            except Exception:
-                sol_start_x = s_left + MARGIN + vp_w / 2.0
-                sol_pref_y  = sheet_mid_y
-            x_sol, y_sol = _find_sheet_spot(
-                occ2, s_left, s_right, s_bot, s_top,
-                vp_w, vp_h, MARGIN, start_x=sol_start_x, preferred_y=sol_pref_y
-            )
-            sol_vp = DB.Viewport.Create(doc, sheet.Id, sv.Id,
-                                        DB.XYZ(x_sol, y_sol, 0))
 
             # ── Step C: apply viewport types ─────────────────────────────────────
             # GetValidTypes() on the newly created viewport returns valid type IDs.
