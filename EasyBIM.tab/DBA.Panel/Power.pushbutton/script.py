@@ -32,10 +32,15 @@ from Autodesk.Revit.DB import (
 try:
     from Autodesk.Revit.DB import BuiltInParameterGroup as _BPG
     _PARAM_GROUP = _BPG.INVALID
-except ImportError:
-    # Revit 2025+ fallback using GroupTypeId
-    from Autodesk.Revit.DB import GroupTypeId
-    _PARAM_GROUP = GroupTypeId.Invalid
+except (ImportError, AttributeError):
+    # Revit 2025+ removed BuiltInParameterGroup; GroupTypeId is the replacement.
+    # Try attribute names in order — the available name varies by sub-version.
+    from Autodesk.Revit.DB import GroupTypeId as _GTI
+    _PARAM_GROUP = next(
+        (getattr(_GTI, n) for n in ('Invalid', 'Other', 'General', 'Data')
+         if getattr(_GTI, n, None) is not None),
+        None
+    )
 
 def _insert_binding(doc, defn, binding):
     doc.ParameterBindings.Insert(defn, binding, _PARAM_GROUP)
