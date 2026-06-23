@@ -58,6 +58,16 @@ from pyrevit import revit
 doc   = revit.doc
 uidoc = revit.uidoc
 
+# --- ייבוא המודול המשותף לניהול פרמטרים (GUID קבועים + מיזוג קטגוריות) ---
+# מומלץ להניח את dekel_shared_params.py בתיקיית lib של תוסף ה-pyRevit.
+# הבלוק הבא מוסיף את תיקיית הסקריפט ל-sys.path כגיבוי, כך שגם אם הקובץ
+# יושב ליד הסקריפט עצמו — הוא יימצא.
+import sys
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.append(_here)
+from dekel_shared_params import ensure_dekel_params
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -101,181 +111,68 @@ PRICE_PARAM_NAMES = {PARAM_PRICE, PARAM_ADDON_PRICE, PARAM_TOTAL}
 NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 # ============================================================================
-# SHARED PARAMETERS - בדיקה ויצירה אוטומטית
+# SHARED PARAMETERS - יצירה/קישור דרך המודול המשותף (GUID קבועים + מיזוג קטגוריות)
 # ============================================================================
-def get_existing_param_names():
-    existing = set()
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        existing.add(it.Key.Name)
-    return existing
+from Autodesk.Revit.DB import BuiltInCategory
 
-def create_missing_shared_params(missing):
-    spf_path = os.path.join(
-        str(System.Environment.GetFolderPath(
-            System.Environment.SpecialFolder.ApplicationData)),
-        "DekelSharedParams_tmp.txt"
-    )
+# כלי התעלות עובד על שתי קטגוריות: תעלות + פיטינגים של תעלות
+TRAY_CATEGORIES = [
+    BuiltInCategory.OST_CableTray,
+    BuiltInCategory.OST_CableTrayFitting,
+]
 
-    header = (
-        u"# Revit Shared Parameters\n"
-        u"*META\tVERSION\tMINVERSION\n"
-        u"META\t2\t1\n"
-        u"*GROUP\tID\tNAME\n"
-        u"GROUP\t1\tDekel\n"
-        u"*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\tHIDEWHENNOVALUEISSHOWN\n"
-    )
-    param_lines = u""
-    for name, dtype in missing:
-        guid = str(System.Guid.NewGuid())
-        param_lines += u"PARAM\t{}\t{}\t{}\t\t1\t1\t\t1\t0\n".format(guid, name, dtype)
-
-    # Revit דורש קובץ Shared Parameters ב-UTF-16
-    with codecs.open(spf_path, "w", encoding="utf-16") as f:
-        f.write(header + param_lines)
-
-    old_spf = doc.Application.SharedParametersFilename
-    doc.Application.SharedParametersFilename = spf_path
-    try:
-        spf = doc.Application.OpenSharedParameterFile()
-        if not spf:
-            raise Exception(u"לא ניתן לפתוח קובץ Shared Parameters")
-        grp = spf.Groups.get_Item("Dekel")
-        if not grp:
-            raise Exception(u"קבוצת Dekel לא נמצאה")
-
-        cat_set = CategorySet()
-        cat_set.Insert(
-            doc.Settings.Categories.get_Item(BuiltInCategory.OST_CableTray))
-        cat_set.Insert(
-            doc.Settings.Categories.get_Item(BuiltInCategory.OST_CableTrayFitting))
-
-        for name, dtype in missing:
-            defn = grp.Definitions.get_Item(name)
-            if not defn:
-                print(u"  אזהרה: הגדרה '{}' לא נמצאה".format(name))
-                continue
-            doc.ParameterBindings.Insert(
-                defn, InstanceBinding(cat_set),
-                _PARAM_GROUP)   # "Other" group
-            print(u"  נוצר: {}".format(name))
-    finally:
-        doc.Application.SharedParametersFilename = old_spf or ""
-        try:
-            os.remove(spf_path)
-        except Exception:
-            pass
-
-def remove_old_number_bindings():
-    """Remove NUMBER-type bindings for price params so they are recreated as TEXT."""
-    to_remove = []
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        defn = it.Key
-        if defn.Name not in PRICE_PARAM_NAMES:
-            continue
-        try:
-            if u"Number" in str(defn.ParameterType):
-                to_remove.append(defn)
-        except Exception:
-            try:
-                if u"string" not in str(defn.GetDataType()).lower():
-                    to_remove.append(defn)
-            except Exception:
-                pass
-    removed = 0
-    for defn in to_remove:
-        try:
-            doc.ParameterBindings.Remove(defn)
-            removed += 1
-        except Exception:
-            pass
-    return removed
-
-t_migrate = Transaction(doc, u"Dekel - Migrate Price Params to TEXT")
-t_migrate.Start()
+t_params = Transaction(doc, u"Dekel - Ensure Shared Parameters")
+t_params.Start()
 try:
-    n_migrated = remove_old_number_bindings()
-    t_migrate.Commit()
-    if n_migrated:
-        print(u"  הומרו {} פרמטרי מחיר מ-NUMBER ל-TEXT (₪)".format(n_migrated))
+    rep = ensure_dekel_params(doc, PARAM_DEFS, TRAY_CATEGORIES)
+    t_params.Commit()
+    if rep["created"]:
+        print(u"נוצרו {} פרמטרים: {}".format(
+            len(rep["created"]), u", ".join(rep["created"])))
+    if rep["extended"]:
+        print(u"קושרו לקטגוריות התעלות {} פרמטרים קיימים: {}".format(
+            len(rep["extended"]), u", ".join(rep["extended"])))
+    if rep["ok"]:
+        print(u"{} פרמטרים כבר היו מקושרים כראוי".format(len(rep["ok"])))
+    if rep["failed"]:
+        print(u"  [אזהרה] לא ניתן לטפל ב-{} פרמטרים: {}".format(
+            len(rep["failed"]), u", ".join(rep["failed"])))
+        TaskDialog.Show("Dekel", u"חלק מהפרמטרים לא נוצרו/קושרו:\n{}".format(
+            u", ".join(rep["failed"])))
 except Exception as e:
-    t_migrate.RollBack()
-    print(u"  [אזהרה] לא ניתן להמיר פרמטרים: {}".format(e))
-
-# בדוק ויצור פרמטרים חסרים
-existing_names = get_existing_param_names()
-missing_params  = [(n, t) for n, t in PARAM_DEFS if n not in existing_names]
-
-if missing_params:
-    print(u"יוצר {} פרמטרים חסרים...".format(len(missing_params)))
-    t0 = Transaction(doc, u"Dekel - Create Shared Parameters")
-    t0.Start()
-    try:
-        create_missing_shared_params(missing_params)
-        t0.Commit()
-        print(u"פרמטרים נוצרו!")
-    except Exception as e:
-        t0.RollBack()
-        TaskDialog.Show("Dekel", u"שגיאה ביצירת פרמטרים:\n{}".format(e))
-        import sys; sys.exit()
-else:
-    print(u"כל הפרמטרים קיימים.")
-
-# --- ודא שהפרמטרים מקושרים גם ל-CableTrayFitting ---
-def ensure_fitting_category():
-    fitting_cat = doc.Settings.Categories.get_Item(BuiltInCategory.OST_CableTrayFitting)
-    param_names = set(n for n, _ in PARAM_DEFS)
-
-    # שלב 1: אסוף את כל ההגדרות — בלי לשנות כלום
-    to_update = []
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        defn = it.Key
-        if defn.Name in param_names:
-            to_update.append(defn)
-
-    # שלב 2: עדכן כל פרמטר — אחרי שהאיטרציה נגמרה
-    added = 0
-    for defn in to_update:
-        binding = doc.ParameterBindings.get_Item(defn)
-        if not binding:
-            continue
-        cats = binding.Categories
-        cats.Insert(fitting_cat)
-        new_binding = InstanceBinding(cats)
-        doc.ParameterBindings.ReInsert(
-            defn, new_binding,
-            _PARAM_GROUP)
-        added += 1
-
-    print(u"  [DEBUG] ensure_fitting: found {} params, updated {}".format(
-        len(to_update), added))
-    return added
-
-t_bind = Transaction(doc, u"Dekel - Bind Fitting Category")
-t_bind.Start()
-try:
-    n_bound = ensure_fitting_category()
-    t_bind.Commit()
-    if n_bound > 0:
-        print(u"קושרו {} פרמטרים ל-Cable Tray Fittings".format(n_bound))
-except Exception as e:
-    t_bind.RollBack()
-    print(u"  אזהרה: לא ניתן לקשר פרמטרים ל-Fittings: {}".format(e))
+    try: t_params.RollBack()
+    except Exception: pass
+    TaskDialog.Show("Dekel", u"שגיאה ביצירת/קישור פרמטרים:\n{}".format(e))
+    import sys; sys.exit()
 
 # ============================================================================
 # 1. בחירת קובץ Excel
+#    אם הכפתור המאוחד (Run All) כבר בחר קובץ — נשתמש בו ולא נפתח דיאלוג.
+#    הנתיב מועבר דרך משתנה הסביבה DEKEL_XLSX_PATHS (מופרד ב-';').
 # ============================================================================
-dlg        = OpenFileDialog()
-dlg.Title  = u"בחר קובץ טבלת דקל"
-dlg.Filter = "Excel Files (*.xlsx)|*.xlsx"
-if dlg.ShowDialog() != DialogResult.OK:
-    TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
-    import sys; sys.exit()
+_preselected = os.environ.get("DEKEL_XLSX_PATHS", "")
+if _preselected:
+    _paths = [p for p in _preselected.split(";") if p]
+    # ייתכנו כמה נתיבים (למשל גם קובץ גנרטורים ל-Power). נבחר את קובץ
+    # החשמל/תעלות: עדיפות לשם שמכיל 'electricity' או '08'; אחרת — הראשון.
+    def _pick_tray_file(paths):
+        for p in paths:
+            low = os.path.basename(p).lower()
+            if u"electric" in low or u"_08" in low or u"08." in low:
+                return p
+        return paths[0]
+    excel_path = _pick_tray_file(_paths)
+    print(u"קובץ (מ-Run All): {}".format(excel_path))
+else:
+    dlg        = OpenFileDialog()
+    dlg.Title  = u"בחר קובץ טבלת דקל"
+    dlg.Filter = "Excel Files (*.xlsx)|*.xlsx"
+    if dlg.ShowDialog() != DialogResult.OK:
+        TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
+        import sys; sys.exit()
+    excel_path = dlg.FileName
+    print(u"קובץ: {}".format(excel_path))
 
-excel_path = dlg.FileName
-print(u"קובץ: {}".format(excel_path))
 
 # ============================================================================
 # 2. קריאת Excel

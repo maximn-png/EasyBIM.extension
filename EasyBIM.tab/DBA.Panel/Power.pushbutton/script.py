@@ -51,6 +51,13 @@ from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as CList
 from pyrevit import revit
 
+# --- ייבוא המודול המשותף לניהול פרמטרים (GUID קבועים + מיזוג קטגוריות) ---
+import os, sys
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.append(_here)
+from dekel_shared_params import ensure_dekel_params
+
 doc   = revit.doc
 uidoc = revit.uidoc
 NS    = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -251,89 +258,36 @@ def match_generator(typ, kva_map):
     desc = u"גנרטור דיזל {} kVA STANDBY ({} kW)".format(closest, kw)
     return code, desc, price, note, closest
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SHARED PARAMETERS
-# ──────────────────────────────────────────────────────────────────────────────
-def get_existing():
-    s = set()
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        s.add(it.Key.Name)
-    return s
+# ────────────────────────────────────────────────────────────────────
+# SHARED PARAMETERS — דרך המודול המשותף (GUID קבועים + מיזוג קטגוריות)
+# ────────────────────────────────────────────────────────────────────
+# כלי ה-Power עובד על ציוד חשמלי (שנאים/גנרטורים) + אביזרים
+POWER_CATEGORIES = [
+    BuiltInCategory.OST_ElectricalEquipment,
+    BuiltInCategory.OST_ElectricalFixtures,
+]
 
-
-def create_params(missing):
-    spf = os.path.join(
-        str(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData)),
-        "DekelPower_tmp.txt")
-    hdr = (u"# Revit Shared Parameters\n*META\tVERSION\tMINVERSION\nMETA\t2\t1\n"
-           u"*GROUP\tID\tNAME\nGROUP\t1\tDekel\n"
-           u"*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\tHIDEWHENNOVALUEISSHOWN\n")
-    lines = u"".join(
-        u"PARAM\t{}\t{}\t{}\t\t1\t1\t\t1\t0\n".format(str(System.Guid.NewGuid()), n, t)
-        for n, t in missing)
-    with codecs.open(spf, "w", encoding="utf-16") as f:
-        f.write(hdr + lines)
-    old = doc.Application.SharedParametersFilename
-    doc.Application.SharedParametersFilename = spf
-    try:
-        sp  = doc.Application.OpenSharedParameterFile()
-        grp = sp.Groups.get_Item("Dekel")
-        cats = CategorySet()
-        for bic in [BuiltInCategory.OST_ElectricalEquipment, BuiltInCategory.OST_ElectricalFixtures]:
-            cats.Insert(doc.Settings.Categories.get_Item(bic))
-        for n, _ in missing:
-            d = grp.Definitions.get_Item(n)
-            if d:
-                _insert_binding(doc, d, InstanceBinding(cats))
-                print(u"  נוצר: {}".format(n))
-    finally:
-        doc.Application.SharedParametersFilename = old or ""
-        try: os.remove(spf)
-        except: pass
-
-
-def ensure_cats():
-    tgt = [doc.Settings.Categories.get_Item(b)
-           for b in [BuiltInCategory.OST_ElectricalEquipment, BuiltInCategory.OST_ElectricalFixtures]]
-    pnames = set(n for n, _ in PARAM_DEFS)
-    defs = []
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        if it.Key.Name in pnames:
-            defs.append(it.Key)
-    for d in defs:
-        b = doc.ParameterBindings.get_Item(d)
-        if not b:
-            continue
-        cats = b.Categories
-        for cat in tgt:
-            cats.Insert(cat)
-        _reinsert_binding(doc, d, InstanceBinding(cats))
-
-
-missing = [(n, t) for n, t in PARAM_DEFS if n not in get_existing()]
-if missing:
-    t0 = Transaction(doc, u"Dekel Power - Params")
-    t0.Start()
-    try:
-        create_params(missing)
-        t0.Commit()
-    except Exception as e:
-        t0.RollBack()
-        TaskDialog.Show("Dekel", u"{}".format(e))
-        import sys; sys.exit()
-else:
-    print(u"פרמטרים קיימים.")
-
-tb = Transaction(doc, u"Dekel Power - Bind")
-tb.Start()
+t_params = Transaction(doc, u"Dekel Power - Ensure Shared Parameters")
+t_params.Start()
 try:
-    ensure_cats()
-    tb.Commit()
+    rep = ensure_dekel_params(doc, PARAM_DEFS, POWER_CATEGORIES)
+    t_params.Commit()
+    if rep["created"]:
+        print(u"נוצרו {} פרמטרים".format(len(rep["created"])))
+    if rep["extended"]:
+        print(u"קושרו לקטגוריות החשמל {} פרמטרים קיימים".format(len(rep["extended"])))
+    if rep["ok"]:
+        print(u"{} פרמטרים כבר היו מקושרים כראוי".format(len(rep["ok"])))
+    if rep["failed"]:
+        print(u"  [אזהרה] לא ניתן לטפל ב-{} פרמטרים: {}".format(
+            len(rep["failed"]), u", ".join(rep["failed"])))
+        TaskDialog.Show("Dekel", u"חלק מהפרמטרים לא נוצרו/קושרו:\n{}".format(
+            u", ".join(rep["failed"])))
 except Exception as e:
-    tb.RollBack()
-    print(u"אזהרה: {}".format(e))
+    try: t_params.RollBack()
+    except Exception: pass
+    TaskDialog.Show("Dekel", u"שגיאה ביצירת/קישור פרמטרים:\n{}".format(e))
+    import sys; sys.exit()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # EXCEL READ
@@ -387,18 +341,24 @@ def read_xlsx(path, catalog):
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FILE SELECTION — multi-select OpenFileDialog
+#    אם הכפתור המאוחד (Run All) כבר בחר קבצים — נשתמש בהם ולא נפתח דיאלוג.
 # ──────────────────────────────────────────────────────────────────────────────
-dlg = OpenFileDialog()
-dlg.Title       = u"בחר קבצי טבלאות דקל (ניתן לבחור מספר קבצים)"
-dlg.Filter      = "Excel Files (*.xlsx)|*.xlsx"
-dlg.Multiselect = True
+_preselected = os.environ.get("DEKEL_XLSX_PATHS", "")
+if _preselected:
+    selected_paths = [p for p in _preselected.split(";") if p]
+    print(u"קבצים (מ-Run All): {}".format(len(selected_paths)))
+else:
+    dlg = OpenFileDialog()
+    dlg.Title       = u"בחר קבצי טבלאות דקל (ניתן לבחור מספר קבצים)"
+    dlg.Filter      = "Excel Files (*.xlsx)|*.xlsx"
+    dlg.Multiselect = True
 
-if dlg.ShowDialog() != DialogResult.OK or not dlg.FileNames:
-    TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
-    import sys; sys.exit()
+    if dlg.ShowDialog() != DialogResult.OK or not dlg.FileNames:
+        TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
+        import sys; sys.exit()
 
-selected_paths = list(dlg.FileNames)
-print(u"קבצים שנבחרו: {}".format(len(selected_paths)))
+    selected_paths = list(dlg.FileNames)
+    print(u"קבצים שנבחרו: {}".format(len(selected_paths)))
 
 catalog = {}
 for path in selected_paths:
