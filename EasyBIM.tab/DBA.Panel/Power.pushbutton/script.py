@@ -541,6 +541,10 @@ equipment = list(FilteredElementCollector(doc)
     .OfCategory(BuiltInCategory.OST_ElectricalEquipment)
     .WhereElementIsNotElementType().ToElements())
 
+fixtures = list(FilteredElementCollector(doc)
+    .OfCategory(BuiltInCategory.OST_ElectricalFixtures)
+    .WhereElementIsNotElementType().ToElements())
+
 
 def _fam(elem):
     return get_ft(elem)[0]
@@ -551,8 +555,8 @@ generators       = [e for e in equipment if u"Generator"   in _fam(e)]
 dry_transformers = [e for e in equipment
                     if u"Transformer" in _fam(e) and u"Dry" in _fam(e)]
 
-print(u"ציוד סה\"כ: {} | גנרטורים: {} | שנאים יבשים: {}".format(
-    len(equipment), len(generators), len(dry_transformers)))
+print(u"ציוד סה\"כ: {} | גנרטורים: {} | שנאים יבשים: {} | שקעים/אביזרים: {}".format(
+    len(equipment), len(generators), len(dry_transformers), len(fixtures)))
 
 skipped_details = []
 failed_details  = []
@@ -650,6 +654,44 @@ print(u"שנאים יבשים: {}\u2713  {}\u26a0  {}\u2717".format(tr_ok, tr_sk
 # Does NOT create: Dekel_ElectricalEquipment (removed per requirement 4)
 # Cleans up: any legacy schedules from previous versions
 # ──────────────────────────────────────────────────────────────────────────────
+fix_ok = fix_sk = fix_fl = 0
+fix_skipped = []
+fix_failed  = []
+
+t_fix = Transaction(doc, u"Dekel Power - Update Electrical Fixtures")
+t_fix.Start()
+for elem in fixtures:
+    eid = str(elem.Id.IntegerValue)
+    fam, typ = get_ft(elem)
+    try:
+        c1, t1, p1, c2, t2, p2 = match_fix(elem)
+        if not c1 and not c2:
+            fix_sk += 1
+            fix_skipped.append((eid, u"{} / {}".format(fam, typ), u"לא נמצא מיפוי"))
+            continue
+
+        ok1 = setp(elem, PARAM_CODE,  c1 or u"")
+        setp(elem, PARAM_DESC,  t1 or u"")
+        setp(elem, PARAM_PRICE, format_price(p1) if p1 else u"")
+
+        setp(elem, PARAM_CODE2,  c2 or u"")
+        setp(elem, PARAM_DESC2,  t2 or u"")
+        setp(elem, PARAM_PRICE2, format_price(p2) if p2 else u"")
+
+        total_fix = (p1 or 0.0) + (p2 or 0.0)
+        setp(elem, PARAM_TOTAL, format_price(total_fix) if total_fix else u"")
+
+        if ok1:
+            fix_ok += 1
+        else:
+            fix_fl += 1
+            fix_failed.append((eid, u"{} / {}".format(fam, typ), u"כשל כתיבה"))
+    except Exception as e:
+        fix_fl += 1
+        fix_failed.append((eid, u"{} / {}".format(fam, typ), u"{}".format(e)))
+t_fix.Commit()
+print(u"שקעים/אביזרים: {}✓  {}⚠  {}✗".format(fix_ok, fix_sk, fix_fl))
+
 from Autodesk.Revit.DB import ViewSchedule, ScheduleFilter, ScheduleFilterType
 
 SCHED_NAME_GEN   = u"Dekel_Generators"
@@ -685,6 +727,33 @@ def _finalize_sched(sd, price_param_names):
     # "Display of a grand total row is not enabled" when accessing grand total
     # properties. Do not enable ShowGrandTotal or touch any grand total APIs.
     pass
+
+
+def create_fixtures_schedule():
+    """Dekel_ElectricalFixtures schedule — all processed electrical fixtures."""
+    _delete_schedule(u"Dekel_ElectricalFixtures")
+    cat_id = doc.Settings.Categories.get_Item(BuiltInCategory.OST_ElectricalFixtures).Id
+    sched  = ViewSchedule.CreateSchedule(doc, cat_id)
+    sched.Name = u"Dekel_ElectricalFixtures"
+    sd = sched.Definition
+    sd.IsItemized = True
+
+    for col in [u"Family and Type", u"Level",
+                PARAM_CODE,  PARAM_DESC,  PARAM_PRICE,
+                PARAM_CODE2, PARAM_DESC2, PARAM_PRICE2,
+                PARAM_TOTAL]:
+        _add_field(sd, col)
+
+    try:
+        for i in range(sd.GetFieldCount()):
+            f = sd.GetField(i)
+            if f.GetName() == PARAM_CODE:
+                sd.AddFilter(ScheduleFilter(f.FieldId, ScheduleFilterType.IsNotEmpty))
+                break
+    except Exception: pass
+
+    _finalize_sched(sd, {PARAM_PRICE, PARAM_PRICE2, PARAM_TOTAL})
+    print(u"טבלה נוצרה: Dekel_ElectricalFixtures")
 
 
 def create_generator_schedule():
@@ -775,6 +844,7 @@ try:
         _delete_schedule(_ls)
     create_generator_schedule()
     create_transformer_schedule()
+    create_fixtures_schedule()
     t_sched.Commit()
 except Exception as e:
     try: t_sched.RollBack()
@@ -1046,8 +1116,8 @@ def show_details():
     lh2.BackColor = BG2; lh2.Location = Point(18,12); lh2.Size = Size(400,24)
     hdr2.Controls.Add(lh2)
     sep_line(frm2, 51, 680, 0)
-    _all_sk = skipped_details + tr_skipped
-    _all_fl = failed_details  + tr_failed
+    _all_sk = skipped_details + tr_skipped + fix_skipped
+    _all_fl = failed_details  + tr_failed  + fix_failed
     lbl2 = Label(); lbl2.Text = u"\u05d3\u05d5\u05dc\u05d2\u05d5: {}  |  \u05e0\u05db\u05e9\u05dc\u05d5: {}".format(
         len(_all_sk), len(_all_fl))
     lbl2.Font = Font(u"Segoe UI",12,FontStyle.Bold); lbl2.ForeColor = TDK
@@ -1082,15 +1152,15 @@ def show_details():
     frm2.ShowDialog()
 
 
-_any_issues   = any([skipped_details, failed_details, tr_skipped, tr_failed])
-total_issues  = eq_sk + eq_fl + tr_sk + tr_fl
+_any_issues   = any([skipped_details, failed_details, tr_skipped, tr_failed, fix_skipped, fix_failed])
+total_issues  = eq_sk + eq_fl + tr_sk + tr_fl + fix_sk + fix_fl
 
 frm = Form(); frm.Text = u"Dekel Power Tool \u2014 \u05e1\u05d9\u05db\u05d5\u05dd"
 frm.RightToLeft = WinRTL.Yes; frm.RightToLeftLayout = True
 frm.StartPosition = FormStartPosition.CenterScreen
 frm.FormBorderStyle = FormBorderStyle.FixedSingle
 frm.MaximizeBox = False; frm.MinimizeBox = False
-frm.ClientSize = Size(490, 420); frm.BackColor = BG
+frm.ClientSize = Size(490, 530); frm.BackColor = BG
 stripe(frm, 490)
 hdr = Panel(); hdr.Location = Point(0,3); hdr.Size = Size(490,48); hdr.BackColor = BG2
 frm.Controls.Add(hdr)
@@ -1135,30 +1205,42 @@ badge(frm, 22+304, 238, tr_fl, u"\u05e0\u05db\u05e9\u05dc\u05d5",
 
 sep_line(frm, 308)
 
+lfix = Label()
+lfix.Text = u"\u05e9\u05e7\u05e2\u05d9\u05dd/\u05d0\u05d1\u05d9\u05d6\u05e8\u05d9\u05dd \u05d1\u05de\u05d5\u05d3\u05dc: {}".format(len(fixtures))
+lfix.Font = Font(u"Segoe UI",9); lfix.ForeColor = TLT
+lfix.Location = Point(22,316); lfix.Size = Size(446,18); frm.Controls.Add(lfix)
+badge(frm, 22,     334, fix_ok, u"\u05e9\u05e7\u05e2\u05d9\u05dd \u05e2\u05d5\u05d3\u05db\u05e0\u05d5", CSUC, CSUCBG)
+badge(frm, 22+152, 334, fix_sk, u"\u05d3\u05d5\u05dc\u05d2\u05d5",
+      CWRN if fix_sk else TLT, CWRNBG if fix_sk else BG2)
+badge(frm, 22+304, 334, fix_fl, u"\u05e0\u05db\u05e9\u05dc\u05d5",
+      CERR if fix_fl else TLT, CERRBG if fix_fl else BG2)
+
+sep_line(frm, 402)
+
 lbq = Label()
 lbq.Text = (u"\u05de\u05d1\u05d8 '\u05d4\u05e0\u05d7\u05d9\u05d5\u05ea \u05db\u05ea\u05d1 \u05db\u05de\u05d5\u05d9\u05d5\u05ea' \u2014 \u2713 \u05e0\u05d5\u05e6\u05e8"
             if bq_view is not None else
             u"\u05de\u05d1\u05d8 '\u05d4\u05e0\u05d7\u05d9\u05d5\u05ea \u05db\u05ea\u05d1 \u05db\u05de\u05d5\u05d9\u05d5\u05ea' \u2014 \u05e9\u05d2\u05d9\u05d0\u05d4")
 lbq.Font = Font(u"Segoe UI",9)
 lbq.ForeColor = CSUC if bq_view is not None else CERR
-lbq.Location = Point(22,316); lbq.Size = Size(446,18); frm.Controls.Add(lbq)
+lbq.Location = Point(22,410); lbq.Size = Size(446,18); frm.Controls.Add(lbq)
 
-sep_line(frm, 340)
+sep_line(frm, 432)
 
 if _any_issues:
     bd = mkbtn(u"\u05d4\u05e6\u05d2 \u05e4\u05e8\u05d8\u05d9\u05dd ({})".format(total_issues),
-               22, 354, 210, 40, pri=True)
+               22, 446, 210, 40, pri=True)
     def on_d(s, e):
         show_details()
         if _zoom[0]: frm.Close()
     bd.Click += on_d; frm.Controls.Add(bd)
 
-bc_close = mkbtn(u"\u05e1\u05d2\u05d5\u05e8", 320, 354, 148, 40)
+bc_close = mkbtn(u"\u05e1\u05d2\u05d5\u05e8", 320, 446, 148, 40)
 bc_close.Click += lambda s, e: frm.Close(); frm.Controls.Add(bc_close)
 
 lver = Label(); lver.Text = u"Yamit Bettman  |  EasyBIM  |  v4.0"
 lver.Font = Font(u"Segoe UI",8); lver.ForeColor = TLT
-lver.Location = Point(22,390); lver.Size = Size(446,16); frm.Controls.Add(lver)
+lver.Location = Point(22,494); lver.Size = Size(446,16); frm.Controls.Add(lver)
 frm.ShowDialog()
 
 # פתח מבט הנחיות אחרי סגירת הדיאלוג
