@@ -1,11 +1,10 @@
-# -*- coding: utf-8 -*-
-"""Dekel — Run All (Cable Trays + Power)"""
+﻿# -*- coding: utf-8 -*-
+"""Run All Dekel Tools — הרצה מלאה ומאוחדת"""
 
-__title__  = "Run All"
-__doc__    = ("\u05de\u05e8\u05d9\u05e5 \u05d0\u05ea \u05e9\u05e0\u05d9 \u05d4\u05db\u05dc\u05d9\u05dd \u05d1\u05e8\u05e6\u05e3 \u2014 \u05ea\u05e2\u05dc\u05d5\u05ea \u05d5\u05d0\u05d7\u05e8 \u05db\u05da \u05e6\u05d9\u05d5\u05d3 \u05d7\u05e9\u05de\u05dc.\n\n"
-              "\u05d1\u05d5\u05d7\u05e8\u05d9\u05dd \u05e7\u05d5\u05d1\u05e5 \u05d0\u05e7\u05e1\u05dc \u05e4\u05e2\u05dd \u05d0\u05d7\u05ea, \u05d5\u05e9\u05e0\u05d9 \u05d4\u05db\u05dc\u05d9\u05dd \u05de\u05e9\u05ea\u05de\u05e9\u05d9\u05dd \u05d1\u05d5.\n"
-              "\u05d0\u05dd \u05db\u05dc\u05d9 \u05d0\u05d7\u05d3 \u05e0\u05db\u05e9\u05dc \u2014 \u05d4\u05e9\u05e0\u05d9 \u05d1\u05db\u05dc \u05d6\u05d0\u05ea \u05e8\u05e5, \u05d5\u05d1\u05e1\u05d5\u05e3 \u05de\u05d5\u05e6\u05d2 \u05e1\u05d9\u05db\u05d5\u05dd.")
-__author__ = "Yamit Bettman"
+__title__   = "Run All"
+__doc__     = (u"מריץ את כל תהליכי דקל ברצף (תעלות, ציוד, שנאים, שקעים, תאורה, מפסקים וכיבוי אש) בריצה אחת.\n"
+               u"חשוב: יש לבחור את כל קבצי האקסל הרלוונטיים יחד (Multiselect) בחלון שייפתח.")
+__author__  = "Yamit Bettman"
 
 import os
 import sys
