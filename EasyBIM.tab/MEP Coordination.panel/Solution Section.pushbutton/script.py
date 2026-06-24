@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Solution Section — EasyBIM MEP Coordination.
 
 4-step wizard: pick an existing section + sheet, choose which linked models to
@@ -308,7 +308,8 @@ def collect_mep_ids_in_volume(link_doc, host_crop_box, link_transform):
     return ids
 
 
-def run(existing_section, sheet, selected_links, skip_duplicates=True):
+def run(existing_section, sheet, selected_links, skip_duplicates=True,
+        existing_template=None):
     """Execute the full coordination build. Returns (per-link-count-dict, new_section_view)."""
     results = {}
     view_name = u"{} Solution".format(existing_section.Name)
@@ -381,6 +382,14 @@ def run(existing_section, sheet, selected_links, skip_duplicates=True):
         # inherited exactly — avoids all BoundingBoxXYZ axis-convention guessing.
         t2 = DB.Transaction(doc, u"EasyBIM: Create solution section")
         t2.Start()
+        # Assign chosen view template to the existing section if not already set.
+        if existing_template is not None:
+            try:
+                if existing_section.ViewTemplateId != existing_template.Id:
+                    existing_section.ViewTemplateId = existing_template.Id
+            except Exception as _ex:
+                logger.warning(
+                    u"Could not assign existing section template: {}".format(_ex))
         new_view_id = existing_section.Duplicate(DB.ViewDuplicateOption.Duplicate)
         sv = doc.GetElement(new_view_id)
         # Ensure unique view name
@@ -760,10 +769,10 @@ XAML = u"""
                 </Border>
                 <StackPanel Grid.Column="1" Margin="9,0,0,0" VerticalAlignment="Center">
                   <TextBlock Text="View template" FontSize="11" Foreground="#9aa0ac"/>
-                  <TextBlock Text="EB_MEP_CUR_SE_1-50" FontFamily="Consolas" FontSize="12"
+                  <TextBlock x:Name="ExistTmplNameTB" Text="EB_MEP_CUR_SE_1-50" FontFamily="Consolas" FontSize="12"
                              Foreground="#1f2937" FontWeight="SemiBold"/>
                 </StackPanel>
-                <TextBlock Grid.Column="2" Text="&#x1F512;" FontSize="10" Foreground="#c0c6e0" VerticalAlignment="Center"/>
+                <TextBlock x:Name="ExistTmplLockTB" Grid.Column="2" Text="&#x1F512;" FontSize="10" Foreground="#c0c6e0" VerticalAlignment="Center"/>
               </Grid>
             </Border>
             <Border Grid.Column="2" Background="#fafbff" BorderBrush="#e8eaff" BorderThickness="1" CornerRadius="8" Padding="12,10">
@@ -773,6 +782,14 @@ XAML = u"""
               </StackPanel>
             </Border>
           </Grid>
+
+          <Border x:Name="ExistTmplPickerContainer" Margin="0,-8,0,14"
+                  Background="White" BorderBrush="#e8eaff" BorderThickness="1"
+                  CornerRadius="8" MaxHeight="160" Visibility="Collapsed">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <StackPanel x:Name="ExistTmplPickerPanel"/>
+            </ScrollViewer>
+          </Border>
 
           <TextBlock Text="PLACE EXISTING SECTION ON SHEET" FontFamily="Consolas" FontSize="10" Foreground="#9aa0ac" Margin="0,0,0,7"/>
           <Border BorderBrush="#e8eaff" BorderThickness="1" CornerRadius="7" Background="White" Margin="0,0,0,5">
@@ -817,6 +834,17 @@ XAML = u"""
 
         <!-- STEP 3 -->
         <StackPanel x:Name="Step3Panel" Visibility="Collapsed">
+          <Border x:Name="ExistSectionTmplNotice"
+                  Background="#fff8ec" BorderBrush="#f9c95a" BorderThickness="1"
+                  CornerRadius="7" Padding="12,9" Margin="0,0,0,10"
+                  Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal">
+              <TextBlock Text="&#x26A0;" FontSize="13" Foreground="#c8850d"
+                         Margin="0,0,8,0" VerticalAlignment="Center"/>
+              <TextBlock x:Name="ExistSectionTmplNoticeTB"
+                         FontSize="12" Foreground="#7a5100" TextWrapping="Wrap"/>
+            </StackPanel>
+          </Border>
           <TextBlock Text="SOLUTION SECTION VIEW · FROM TEMPLATE" FontFamily="Consolas" FontSize="10" Foreground="#9aa0ac" Margin="0,0,0,7"/>
           <Border Background="White" BorderBrush="#e8eaff" BorderThickness="1" CornerRadius="8" Margin="0,0,0,14">
             <StackPanel>
@@ -940,7 +968,7 @@ XAML = u"""
                   <TextBlock x:Name="R_ExistSection" FontSize="13" FontWeight="SemiBold" Foreground="#1f2937" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid></Border>
                 <Border BorderBrush="#f0f1ff" BorderThickness="0,0,0,1" Padding="13,10"><Grid>
                   <TextBlock Text="Existing template" FontSize="12.5" Foreground="#6b7280" VerticalAlignment="Center"/>
-                  <TextBlock Text="EB_MEP_CUR_SE_1-50 · 1 : 50" FontFamily="Consolas" FontSize="12.5" FontWeight="SemiBold" Foreground="#1f2937" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid></Border>
+                  <TextBlock x:Name="R_ExistTmpl" Text="EB_MEP_CUR_SE_1-50 · 1 : 50" FontFamily="Consolas" FontSize="12.5" FontWeight="SemiBold" Foreground="#1f2937" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid></Border>
                 <Border BorderBrush="#f0f1ff" BorderThickness="0,0,0,1" Padding="13,10"><Grid>
                   <TextBlock Text="Sheet" FontSize="12.5" Foreground="#6b7280" VerticalAlignment="Center"/>
                   <TextBlock x:Name="R_Sheet" FontSize="13" FontWeight="SemiBold" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid></Border>
@@ -1075,6 +1103,11 @@ class SolutionSectionDialog(object):
         self._sheet_rows   = []   # list of (sheet_obj, border, icon_tb)
         self._link_rows    = []   # list of {info, cb_border, cb_inner}
 
+        # Template for existing section
+        self._sel_existing_tmpl   = None  # resolved View template (or user-picked)
+        self._available_sec_tmpls = []    # populated only when default is missing
+        self._tmpl_rows           = []    # picker row list
+
         self.cancelled = True
         self._window   = None
 
@@ -1104,6 +1137,7 @@ class SolutionSectionDialog(object):
         self._populate_sections()
         self._populate_sheets(u"")
         self._populate_links()
+        self._setup_existing_template()
         self._go_to_step(1)
         return window
 
@@ -1396,6 +1430,101 @@ class SolutionSectionDialog(object):
             u"Deselect all" if all_on else u"Select all"
         )
 
+    # ── Existing section template setup ──────────────────────────────────────
+
+    def _setup_existing_template(self):
+        """Resolve EB_MEP_CUR_SE_1-50; if absent, show a picker for alternatives."""
+        default = find_view_template(EXISTING_TEMPLATE)
+        if default:
+            self._sel_existing_tmpl = default
+            return  # locked display stays unchanged
+
+        # Default not found — collect all section view templates.
+        all_tmpls = sorted(
+            [v for v in DB.FilteredElementCollector(doc).OfClass(DB.View)
+             if v.IsTemplate and v.ViewType == DB.ViewType.Section],
+            key=lambda v: v.Name
+        )
+        self._available_sec_tmpls = all_tmpls
+
+        w = self._window
+        tmpl_tb = w.FindName(u"ExistTmplNameTB")
+        if tmpl_tb:
+            tmpl_tb.Text       = u"Not found — pick below"
+            tmpl_tb.Foreground = _color(WM.Color.FromRgb(0xc8, 0x85, 0x0d))
+        lock_tb = w.FindName(u"ExistTmplLockTB")
+        if lock_tb:
+            lock_tb.Text       = u"⚠"
+            lock_tb.Foreground = _color(WM.Color.FromRgb(0xc8, 0x85, 0x0d))
+
+        container = w.FindName(u"ExistTmplPickerContainer")
+        if container:
+            container.Visibility = System.Windows.Visibility.Visible
+
+        panel = w.FindName(u"ExistTmplPickerPanel")
+        if panel:
+            self._tmpl_rows = []
+            for i, tmpl in enumerate(all_tmpls):
+                is_last = (i == len(all_tmpls) - 1)
+                row = self._make_tmpl_row(tmpl, is_last)
+                panel.Children.Add(row[u"border"])
+                self._tmpl_rows.append(row)
+            if all_tmpls:
+                self._sel_existing_tmpl = all_tmpls[0]
+                self._update_tmpl_selection()
+
+    def _make_tmpl_row(self, tmpl, is_last):
+        border = WC.Border()
+        border.Padding    = System.Windows.Thickness(10, 9, 10, 9)
+        border.Background = WM.Brushes.Transparent
+        border.Cursor     = WI.Cursors.Hand
+        if not is_last:
+            border.BorderBrush     = _color(LINE_COLOR)
+            border.BorderThickness = System.Windows.Thickness(0, 0, 0, 1)
+
+        row = WC.StackPanel()
+        row.Orientation = WC.Orientation.Horizontal
+
+        icon_tb = WC.TextBlock()
+        icon_tb.Text              = u"○"
+        icon_tb.FontSize          = 14
+        icon_tb.Foreground        = _color(GRAY_COLOR)
+        icon_tb.VerticalAlignment = System.Windows.VerticalAlignment.Center
+        icon_tb.Margin            = System.Windows.Thickness(0, 0, 10, 0)
+
+        name_tb = WC.TextBlock()
+        name_tb.Text              = tmpl.Name
+        name_tb.FontFamily        = WM.FontFamily(u"Consolas")
+        name_tb.FontSize          = 12.5
+        name_tb.Foreground        = _color(BODY_COLOR)
+        name_tb.VerticalAlignment = System.Windows.VerticalAlignment.Center
+
+        row.Children.Add(icon_tb)
+        row.Children.Add(name_tb)
+        border.Child = row
+
+        row_data = {u"tmpl": tmpl, u"border": border, u"icon_tb": icon_tb}
+
+        def on_click(s, e, rd=row_data):
+            self._sel_existing_tmpl = rd[u"tmpl"]
+            self._update_tmpl_selection()
+
+        border.MouseLeftButtonUp += on_click
+        return row_data
+
+    def _update_tmpl_selection(self):
+        for rd in self._tmpl_rows:
+            sel = (self._sel_existing_tmpl is not None and
+                   rd[u"tmpl"].Id == self._sel_existing_tmpl.Id)
+            if sel:
+                rd[u"border"].Background = _color(SEL_BG)
+                rd[u"icon_tb"].Text      = u"✓"
+                rd[u"icon_tb"].Foreground = _color(CYAN_COLOR)
+            else:
+                rd[u"border"].Background = WM.Brushes.Transparent
+                rd[u"icon_tb"].Text      = u"○"
+                rd[u"icon_tb"].Foreground = _color(GRAY_COLOR)
+
     # ── Step navigation ───────────────────────────────────────────────────────
 
     def _go_to_step(self, step):
@@ -1495,6 +1624,25 @@ class SolutionSectionDialog(object):
         else:
             w.FindName(u"S3Sheet").Text = u"No sheet selected — go back to Step 1"
 
+        # Show a notice if the existing section doesn't already have the chosen template.
+        notice    = w.FindName(u"ExistSectionTmplNotice")
+        notice_tb = w.FindName(u"ExistSectionTmplNoticeTB")
+        if notice and notice_tb and self._sel_existing_tmpl:
+            sel_view = next(
+                (v for v in self._sections if v.Name == self._sel_section), None)
+            needs_assign = (
+                sel_view is not None and
+                sel_view.ViewTemplateId != self._sel_existing_tmpl.Id
+            )
+            if needs_assign:
+                notice_tb.Text = (
+                    u"The existing section does not use “{}” — "
+                    u"the template will be assigned when you run.".format(
+                        self._sel_existing_tmpl.Name))
+                notice.Visibility = System.Windows.Visibility.Visible
+            else:
+                notice.Visibility = System.Windows.Visibility.Collapsed
+
     def _refresh_step4_review(self):
         w = self._window
         sel_links = [r[u"info"] for r in self._link_rows
@@ -1512,6 +1660,12 @@ class SolutionSectionDialog(object):
         else:
             w.FindName(u"R_Sheet").Text       = u"None selected"
             w.FindName(u"R_Sheet").Foreground = _color(WM.Color.FromRgb(0xe0, 0x80, 0x00))
+
+        r_tmpl = w.FindName(u"R_ExistTmpl")
+        if r_tmpl:
+            tmpl_name = (self._sel_existing_tmpl.Name
+                         if self._sel_existing_tmpl else EXISTING_TEMPLATE)
+            r_tmpl.Text = u"{} · 1 : 50".format(tmpl_name)
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
@@ -1541,7 +1695,8 @@ class SolutionSectionDialog(object):
 
         try:
             results, new_sv = run(selected_section, self._sel_sheet,
-                                  selected_links, skip_dup)
+                                  selected_links, skip_dup,
+                                  existing_template=self._sel_existing_tmpl)
             self._result_section_view = new_sv
             self._show_result(results, selected_links, new_sv)
             self.cancelled = False
