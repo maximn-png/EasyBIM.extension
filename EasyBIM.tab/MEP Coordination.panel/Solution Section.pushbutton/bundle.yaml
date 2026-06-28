@@ -1,0 +1,11 @@
+title: |-
+  Solution
+  Section
+tooltip: >-
+  Create a coordination section from linked MEP models — copies MEP elements
+  within an existing section's volume into the host model on the "MEP Solution"
+  workset, applies the EB_MEP_SOL_SE_1-50 view template and places the view
+  on the same sheet next to the existing section.
+author: EasyBIM
+highlight: new
+min_revit_ver: 2023

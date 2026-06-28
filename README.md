@@ -71,7 +71,7 @@ Then open Revit, go to **pyRevit tab → pyRevit Settings → Extensions**, find
 
 **Step 1 — Sync and open**
 
-Every time you sit down to work, run these two commands first. The first pulls in any changes teammates have merged since you last worked. The second opens the plugin folder in VS Code.
+Every time you sit down to work, run these commands first — even if you already have a branch from a previous session. The first two pull in any changes teammates have merged since you last worked. The third opens the plugin folder in VS Code.
 
 ```powershell
 cd "$env:APPDATA\pyRevit\Extensions\EasyBIM.extension"
@@ -79,6 +79,8 @@ git fetch origin
 git merge origin/main
 code .
 ```
+
+> **If you can't see new folders or buttons your teammates added** (for example, a new panel like `DBA.Panel`), it means your branch is behind `main`. Running `git fetch origin` followed by `git merge origin/main` will bring those changes onto your branch. New files merged into `main` do not appear on your branch automatically.
 
 **Step 2 — Start a Claude Code session**
 
