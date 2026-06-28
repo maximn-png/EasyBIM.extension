@@ -26,12 +26,37 @@ import System
 
 from Autodesk.Revit.DB import (
     Transaction, BuiltInCategory, FilteredElementCollector,
-    CategorySet, InstanceBinding, ElementId, BuiltInParameterGroup,
+    CategorySet, InstanceBinding, ElementId,
     BuiltInParameter, XYZ,
 )
+try:
+    from Autodesk.Revit.DB import BuiltInParameterGroup as _BPG
+    _PARAM_GROUP = _BPG.INVALID
+except (ImportError, AttributeError):
+    # Revit 2025+ removed BuiltInParameterGroup; GroupTypeId is the replacement.
+    # Try attribute names in order — the available name varies by sub-version.
+    from Autodesk.Revit.DB import GroupTypeId as _GTI
+    _PARAM_GROUP = next(
+        (getattr(_GTI, n) for n in ('Invalid', 'Other', 'General', 'Data')
+         if getattr(_GTI, n, None) is not None),
+        None
+    )
+
+def _insert_binding(doc, defn, binding):
+    doc.ParameterBindings.Insert(defn, binding, _PARAM_GROUP)
+
+def _reinsert_binding(doc, defn, binding):
+    doc.ParameterBindings.ReInsert(defn, binding, _PARAM_GROUP)
 from Autodesk.Revit.UI import TaskDialog
 from System.Collections.Generic import List as CList
 from pyrevit import revit
+
+# --- ייבוא המודול המשותף לניהול פרמטרים (GUID קבועים + מיזוג קטגוריות) ---
+import os, sys
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in sys.path:
+    sys.path.append(_here)
+from dekel_shared_params import ensure_dekel_params
 
 doc   = revit.doc
 uidoc = revit.uidoc
@@ -233,89 +258,36 @@ def match_generator(typ, kva_map):
     desc = u"גנרטור דיזל {} kVA STANDBY ({} kW)".format(closest, kw)
     return code, desc, price, note, closest
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SHARED PARAMETERS
-# ──────────────────────────────────────────────────────────────────────────────
-def get_existing():
-    s = set()
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        s.add(it.Key.Name)
-    return s
+# ────────────────────────────────────────────────────────────────────
+# SHARED PARAMETERS — דרך המודול המשותף (GUID קבועים + מיזוג קטגוריות)
+# ────────────────────────────────────────────────────────────────────
+# כלי ה-Power עובד על ציוד חשמלי (שנאים/גנרטורים) + אביזרים
+POWER_CATEGORIES = [
+    BuiltInCategory.OST_ElectricalEquipment,
+    BuiltInCategory.OST_ElectricalFixtures,
+]
 
-
-def create_params(missing):
-    spf = os.path.join(
-        str(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData)),
-        "DekelPower_tmp.txt")
-    hdr = (u"# Revit Shared Parameters\n*META\tVERSION\tMINVERSION\nMETA\t2\t1\n"
-           u"*GROUP\tID\tNAME\nGROUP\t1\tDekel\n"
-           u"*PARAM\tGUID\tNAME\tDATATYPE\tDATACATEGORY\tGROUP\tVISIBLE\tDESCRIPTION\tUSERMODIFIABLE\tHIDEWHENNOVALUEISSHOWN\n")
-    lines = u"".join(
-        u"PARAM\t{}\t{}\t{}\t\t1\t1\t\t1\t0\n".format(str(System.Guid.NewGuid()), n, t)
-        for n, t in missing)
-    with codecs.open(spf, "w", encoding="utf-16") as f:
-        f.write(hdr + lines)
-    old = doc.Application.SharedParametersFilename
-    doc.Application.SharedParametersFilename = spf
-    try:
-        sp  = doc.Application.OpenSharedParameterFile()
-        grp = sp.Groups.get_Item("Dekel")
-        cats = CategorySet()
-        for bic in [BuiltInCategory.OST_ElectricalEquipment, BuiltInCategory.OST_ElectricalFixtures]:
-            cats.Insert(doc.Settings.Categories.get_Item(bic))
-        for n, _ in missing:
-            d = grp.Definitions.get_Item(n)
-            if d:
-                doc.ParameterBindings.Insert(d, InstanceBinding(cats), BuiltInParameterGroup.INVALID)
-                print(u"  נוצר: {}".format(n))
-    finally:
-        doc.Application.SharedParametersFilename = old or ""
-        try: os.remove(spf)
-        except: pass
-
-
-def ensure_cats():
-    tgt = [doc.Settings.Categories.get_Item(b)
-           for b in [BuiltInCategory.OST_ElectricalEquipment, BuiltInCategory.OST_ElectricalFixtures]]
-    pnames = set(n for n, _ in PARAM_DEFS)
-    defs = []
-    it = doc.ParameterBindings.ForwardIterator()
-    while it.MoveNext():
-        if it.Key.Name in pnames:
-            defs.append(it.Key)
-    for d in defs:
-        b = doc.ParameterBindings.get_Item(d)
-        if not b:
-            continue
-        cats = b.Categories
-        for cat in tgt:
-            cats.Insert(cat)
-        doc.ParameterBindings.ReInsert(d, InstanceBinding(cats), BuiltInParameterGroup.INVALID)
-
-
-missing = [(n, t) for n, t in PARAM_DEFS if n not in get_existing()]
-if missing:
-    t0 = Transaction(doc, u"Dekel Power - Params")
-    t0.Start()
-    try:
-        create_params(missing)
-        t0.Commit()
-    except Exception as e:
-        t0.RollBack()
-        TaskDialog.Show("Dekel", u"{}".format(e))
-        import sys; sys.exit()
-else:
-    print(u"פרמטרים קיימים.")
-
-tb = Transaction(doc, u"Dekel Power - Bind")
-tb.Start()
+t_params = Transaction(doc, u"Dekel Power - Ensure Shared Parameters")
+t_params.Start()
 try:
-    ensure_cats()
-    tb.Commit()
+    rep = ensure_dekel_params(doc, PARAM_DEFS, POWER_CATEGORIES)
+    t_params.Commit()
+    if rep["created"]:
+        print(u"נוצרו {} פרמטרים".format(len(rep["created"])))
+    if rep["extended"]:
+        print(u"קושרו לקטגוריות החשמל {} פרמטרים קיימים".format(len(rep["extended"])))
+    if rep["ok"]:
+        print(u"{} פרמטרים כבר היו מקושרים כראוי".format(len(rep["ok"])))
+    if rep["failed"]:
+        print(u"  [אזהרה] לא ניתן לטפל ב-{} פרמטרים: {}".format(
+            len(rep["failed"]), u", ".join(rep["failed"])))
+        TaskDialog.Show("Dekel", u"חלק מהפרמטרים לא נוצרו/קושרו:\n{}".format(
+            u", ".join(rep["failed"])))
 except Exception as e:
-    tb.RollBack()
-    print(u"אזהרה: {}".format(e))
+    try: t_params.RollBack()
+    except Exception: pass
+    TaskDialog.Show("Dekel", u"שגיאה ביצירת/קישור פרמטרים:\n{}".format(e))
+    import sys; sys.exit()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # EXCEL READ
@@ -369,18 +341,24 @@ def read_xlsx(path, catalog):
 
 # ──────────────────────────────────────────────────────────────────────────────
 # FILE SELECTION — multi-select OpenFileDialog
+#    אם הכפתור המאוחד (Run All) כבר בחר קבצים — נשתמש בהם ולא נפתח דיאלוג.
 # ──────────────────────────────────────────────────────────────────────────────
-dlg = OpenFileDialog()
-dlg.Title       = u"בחר קבצי טבלאות דקל (ניתן לבחור מספר קבצים)"
-dlg.Filter      = "Excel Files (*.xlsx)|*.xlsx"
-dlg.Multiselect = True
+_preselected = os.environ.get("DEKEL_XLSX_PATHS", "")
+if _preselected:
+    selected_paths = [p for p in _preselected.split(";") if p]
+    print(u"קבצים (מ-Run All): {}".format(len(selected_paths)))
+else:
+    dlg = OpenFileDialog()
+    dlg.Title       = u"בחר קבצי טבלאות דקל (ניתן לבחור מספר קבצים)"
+    dlg.Filter      = "Excel Files (*.xlsx)|*.xlsx"
+    dlg.Multiselect = True
 
-if dlg.ShowDialog() != DialogResult.OK or not dlg.FileNames:
-    TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
-    import sys; sys.exit()
+    if dlg.ShowDialog() != DialogResult.OK or not dlg.FileNames:
+        TaskDialog.Show("Dekel", u"לא נבחר קובץ.")
+        import sys; sys.exit()
 
-selected_paths = list(dlg.FileNames)
-print(u"קבצים שנבחרו: {}".format(len(selected_paths)))
+    selected_paths = list(dlg.FileNames)
+    print(u"קבצים שנבחרו: {}".format(len(selected_paths)))
 
 catalog = {}
 for path in selected_paths:
@@ -563,6 +541,10 @@ equipment = list(FilteredElementCollector(doc)
     .OfCategory(BuiltInCategory.OST_ElectricalEquipment)
     .WhereElementIsNotElementType().ToElements())
 
+fixtures = list(FilteredElementCollector(doc)
+    .OfCategory(BuiltInCategory.OST_ElectricalFixtures)
+    .WhereElementIsNotElementType().ToElements())
+
 
 def _fam(elem):
     return get_ft(elem)[0]
@@ -573,8 +555,8 @@ generators       = [e for e in equipment if u"Generator"   in _fam(e)]
 dry_transformers = [e for e in equipment
                     if u"Transformer" in _fam(e) and u"Dry" in _fam(e)]
 
-print(u"ציוד סה\"כ: {} | גנרטורים: {} | שנאים יבשים: {}".format(
-    len(equipment), len(generators), len(dry_transformers)))
+print(u"ציוד סה\"כ: {} | גנרטורים: {} | שנאים יבשים: {} | שקעים/אביזרים: {}".format(
+    len(equipment), len(generators), len(dry_transformers), len(fixtures)))
 
 skipped_details = []
 failed_details  = []
@@ -672,6 +654,44 @@ print(u"שנאים יבשים: {}\u2713  {}\u26a0  {}\u2717".format(tr_ok, tr_sk
 # Does NOT create: Dekel_ElectricalEquipment (removed per requirement 4)
 # Cleans up: any legacy schedules from previous versions
 # ──────────────────────────────────────────────────────────────────────────────
+fix_ok = fix_sk = fix_fl = 0
+fix_skipped = []
+fix_failed  = []
+
+t_fix = Transaction(doc, u"Dekel Power - Update Electrical Fixtures")
+t_fix.Start()
+for elem in fixtures:
+    eid = str(elem.Id.IntegerValue)
+    fam, typ = get_ft(elem)
+    try:
+        c1, t1, p1, c2, t2, p2 = match_fix(elem)
+        if not c1 and not c2:
+            fix_sk += 1
+            fix_skipped.append((eid, u"{} / {}".format(fam, typ), u"לא נמצא מיפוי"))
+            continue
+
+        ok1 = setp(elem, PARAM_CODE,  c1 or u"")
+        setp(elem, PARAM_DESC,  t1 or u"")
+        setp(elem, PARAM_PRICE, format_price(p1) if p1 else u"")
+
+        setp(elem, PARAM_CODE2,  c2 or u"")
+        setp(elem, PARAM_DESC2,  t2 or u"")
+        setp(elem, PARAM_PRICE2, format_price(p2) if p2 else u"")
+
+        total_fix = (p1 or 0.0) + (p2 or 0.0)
+        setp(elem, PARAM_TOTAL, format_price(total_fix) if total_fix else u"")
+
+        if ok1:
+            fix_ok += 1
+        else:
+            fix_fl += 1
+            fix_failed.append((eid, u"{} / {}".format(fam, typ), u"כשל כתיבה"))
+    except Exception as e:
+        fix_fl += 1
+        fix_failed.append((eid, u"{} / {}".format(fam, typ), u"{}".format(e)))
+t_fix.Commit()
+print(u"שקעים/אביזרים: {}✓  {}⚠  {}✗".format(fix_ok, fix_sk, fix_fl))
+
 from Autodesk.Revit.DB import ViewSchedule, ScheduleFilter, ScheduleFilterType
 
 SCHED_NAME_GEN   = u"Dekel_Generators"
@@ -707,6 +727,33 @@ def _finalize_sched(sd, price_param_names):
     # "Display of a grand total row is not enabled" when accessing grand total
     # properties. Do not enable ShowGrandTotal or touch any grand total APIs.
     pass
+
+
+def create_fixtures_schedule():
+    """Dekel_ElectricalFixtures schedule — all processed electrical fixtures."""
+    _delete_schedule(u"Dekel_ElectricalFixtures")
+    cat_id = doc.Settings.Categories.get_Item(BuiltInCategory.OST_ElectricalFixtures).Id
+    sched  = ViewSchedule.CreateSchedule(doc, cat_id)
+    sched.Name = u"Dekel_ElectricalFixtures"
+    sd = sched.Definition
+    sd.IsItemized = True
+
+    for col in [u"Family and Type", u"Level",
+                PARAM_CODE,  PARAM_DESC,  PARAM_PRICE,
+                PARAM_CODE2, PARAM_DESC2, PARAM_PRICE2,
+                PARAM_TOTAL]:
+        _add_field(sd, col)
+
+    try:
+        for i in range(sd.GetFieldCount()):
+            f = sd.GetField(i)
+            if f.GetName() == PARAM_CODE:
+                sd.AddFilter(ScheduleFilter(f.FieldId, ScheduleFilterType.IsNotEmpty))
+                break
+    except Exception: pass
+
+    _finalize_sched(sd, {PARAM_PRICE, PARAM_PRICE2, PARAM_TOTAL})
+    print(u"טבלה נוצרה: Dekel_ElectricalFixtures")
 
 
 def create_generator_schedule():
@@ -797,6 +844,7 @@ try:
         _delete_schedule(_ls)
     create_generator_schedule()
     create_transformer_schedule()
+    create_fixtures_schedule()
     t_sched.Commit()
 except Exception as e:
     try: t_sched.RollBack()
@@ -1068,8 +1116,8 @@ def show_details():
     lh2.BackColor = BG2; lh2.Location = Point(18,12); lh2.Size = Size(400,24)
     hdr2.Controls.Add(lh2)
     sep_line(frm2, 51, 680, 0)
-    _all_sk = skipped_details + tr_skipped
-    _all_fl = failed_details  + tr_failed
+    _all_sk = skipped_details + tr_skipped + fix_skipped
+    _all_fl = failed_details  + tr_failed  + fix_failed
     lbl2 = Label(); lbl2.Text = u"\u05d3\u05d5\u05dc\u05d2\u05d5: {}  |  \u05e0\u05db\u05e9\u05dc\u05d5: {}".format(
         len(_all_sk), len(_all_fl))
     lbl2.Font = Font(u"Segoe UI",12,FontStyle.Bold); lbl2.ForeColor = TDK
@@ -1104,15 +1152,15 @@ def show_details():
     frm2.ShowDialog()
 
 
-_any_issues   = any([skipped_details, failed_details, tr_skipped, tr_failed])
-total_issues  = eq_sk + eq_fl + tr_sk + tr_fl
+_any_issues   = any([skipped_details, failed_details, tr_skipped, tr_failed, fix_skipped, fix_failed])
+total_issues  = eq_sk + eq_fl + tr_sk + tr_fl + fix_sk + fix_fl
 
 frm = Form(); frm.Text = u"Dekel Power Tool \u2014 \u05e1\u05d9\u05db\u05d5\u05dd"
 frm.RightToLeft = WinRTL.Yes; frm.RightToLeftLayout = True
 frm.StartPosition = FormStartPosition.CenterScreen
 frm.FormBorderStyle = FormBorderStyle.FixedSingle
 frm.MaximizeBox = False; frm.MinimizeBox = False
-frm.ClientSize = Size(490, 420); frm.BackColor = BG
+frm.ClientSize = Size(490, 530); frm.BackColor = BG
 stripe(frm, 490)
 hdr = Panel(); hdr.Location = Point(0,3); hdr.Size = Size(490,48); hdr.BackColor = BG2
 frm.Controls.Add(hdr)
@@ -1157,30 +1205,42 @@ badge(frm, 22+304, 238, tr_fl, u"\u05e0\u05db\u05e9\u05dc\u05d5",
 
 sep_line(frm, 308)
 
+lfix = Label()
+lfix.Text = u"\u05e9\u05e7\u05e2\u05d9\u05dd/\u05d0\u05d1\u05d9\u05d6\u05e8\u05d9\u05dd \u05d1\u05de\u05d5\u05d3\u05dc: {}".format(len(fixtures))
+lfix.Font = Font(u"Segoe UI",9); lfix.ForeColor = TLT
+lfix.Location = Point(22,316); lfix.Size = Size(446,18); frm.Controls.Add(lfix)
+badge(frm, 22,     334, fix_ok, u"\u05e9\u05e7\u05e2\u05d9\u05dd \u05e2\u05d5\u05d3\u05db\u05e0\u05d5", CSUC, CSUCBG)
+badge(frm, 22+152, 334, fix_sk, u"\u05d3\u05d5\u05dc\u05d2\u05d5",
+      CWRN if fix_sk else TLT, CWRNBG if fix_sk else BG2)
+badge(frm, 22+304, 334, fix_fl, u"\u05e0\u05db\u05e9\u05dc\u05d5",
+      CERR if fix_fl else TLT, CERRBG if fix_fl else BG2)
+
+sep_line(frm, 402)
+
 lbq = Label()
 lbq.Text = (u"\u05de\u05d1\u05d8 '\u05d4\u05e0\u05d7\u05d9\u05d5\u05ea \u05db\u05ea\u05d1 \u05db\u05de\u05d5\u05d9\u05d5\u05ea' \u2014 \u2713 \u05e0\u05d5\u05e6\u05e8"
             if bq_view is not None else
             u"\u05de\u05d1\u05d8 '\u05d4\u05e0\u05d7\u05d9\u05d5\u05ea \u05db\u05ea\u05d1 \u05db\u05de\u05d5\u05d9\u05d5\u05ea' \u2014 \u05e9\u05d2\u05d9\u05d0\u05d4")
 lbq.Font = Font(u"Segoe UI",9)
 lbq.ForeColor = CSUC if bq_view is not None else CERR
-lbq.Location = Point(22,316); lbq.Size = Size(446,18); frm.Controls.Add(lbq)
+lbq.Location = Point(22,410); lbq.Size = Size(446,18); frm.Controls.Add(lbq)
 
-sep_line(frm, 340)
+sep_line(frm, 432)
 
 if _any_issues:
     bd = mkbtn(u"\u05d4\u05e6\u05d2 \u05e4\u05e8\u05d8\u05d9\u05dd ({})".format(total_issues),
-               22, 354, 210, 40, pri=True)
+               22, 446, 210, 40, pri=True)
     def on_d(s, e):
         show_details()
         if _zoom[0]: frm.Close()
     bd.Click += on_d; frm.Controls.Add(bd)
 
-bc_close = mkbtn(u"\u05e1\u05d2\u05d5\u05e8", 320, 354, 148, 40)
+bc_close = mkbtn(u"\u05e1\u05d2\u05d5\u05e8", 320, 446, 148, 40)
 bc_close.Click += lambda s, e: frm.Close(); frm.Controls.Add(bc_close)
 
 lver = Label(); lver.Text = u"Yamit Bettman  |  EasyBIM  |  v4.0"
 lver.Font = Font(u"Segoe UI",8); lver.ForeColor = TLT
-lver.Location = Point(22,390); lver.Size = Size(446,16); frm.Controls.Add(lver)
+lver.Location = Point(22,494); lver.Size = Size(446,16); frm.Controls.Add(lver)
 frm.ShowDialog()
 
 # פתח מבט הנחיות אחרי סגירת הדיאלוג
